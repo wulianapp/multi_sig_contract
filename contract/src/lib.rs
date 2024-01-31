@@ -67,6 +67,7 @@ pub struct CoinTx {
     to: AccountId,
     coin_id:AccountId,
     amount:u128,
+    expire_at: u64,
     memo:Option<String>
 }
 
@@ -222,7 +223,7 @@ impl Contract {
                       coin_tx: CoinTx,
     ) -> Promise{
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
-        let CoinTx{ from,to,coin_id,amount,memo} = coin_tx;
+        let CoinTx{ from,to,coin_id,amount,memo,expire_at} = coin_tx;
         let caller = env::predecessor_account_id();
         require!(caller.eq(&from),"from must be  equal caller");
 
@@ -230,6 +231,10 @@ impl Contract {
             let my_strategy = self.user_strategy.get(&caller).ok_or(
                 format!("{} haven't register multi_sig account!",caller.to_string())
             )?;
+
+            if env::block_timestamp_ms() > expire_at {
+                Err("signature have been expired")?
+            }
 
             let servant_need = get_servant_need(&my_strategy.multi_sig_ranks, &coin_id, amount).unwrap();
             if servant_device_sigs.len() < servant_need as usize {
