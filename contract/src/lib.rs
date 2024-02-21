@@ -92,7 +92,7 @@ pub struct SignInfo {
 #[near_bindgen]
 impl Contract {
 
-    fn get_user_strategy(&self,account_id:&AccountId) -> StrategyData {
+    pub fn get_user_strategy(&self,account_id:&AccountId) -> StrategyData {
         match self.user_strategy.get(account_id) {
             Some(data) => data.to_owned(),
             None => {
@@ -232,8 +232,9 @@ impl Contract {
                 format!("{} haven't register multi_sig account!",caller.to_string())
             )?;
 
-            if env::block_timestamp_ms() > expire_at {
-                Err("signature have been expired")?
+            let now = env::block_timestamp_ms();
+            if now > expire_at {
+                Err(format!("signature have been expired: now {} and expire_at {}",now,expire_at))?
             }
 
             let servant_need = get_servant_need(&my_strategy.multi_sig_ranks, &coin_id, amount).unwrap();
