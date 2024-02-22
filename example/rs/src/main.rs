@@ -46,12 +46,13 @@ pub struct CoinTx {
     to: AccountId,
     coin_id:AccountId,
     amount:u128,
-    memo:Option<String>
+    memo:Option<String>,
+    expire_at: u64,
 }
 
 lazy_static! {
     static ref CHAIN_CLIENT: JsonRpcClient = JsonRpcClient::connect("http://123.56.252.201:8061");
-    static ref MULTI_SIG_CID: AccountId = AccountId::from_str("multi_sig.node0").unwrap();
+    static ref MULTI_SIG_CID: AccountId = AccountId::from_str("multi_sig4.node0").unwrap();
     static ref DW20_CID: AccountId = AccountId::from_str("dw20.node0").unwrap();
 }
 
@@ -191,8 +192,10 @@ async fn get_strategy(user_account_id: &AccountId) -> Option<StrategyData> {
             }).to_string().into_bytes()),
         },
     };
-    let rep = CHAIN_CLIENT.call(request).await.unwrap();
-
+    let rep = CHAIN_CLIENT.call(request).await;
+    println!("0001_ {:?}",rep);
+    return None;
+    /***
     if let QueryResponseKind::CallResult(result) = rep.kind {
         let amount_str: String = String::from_utf8(result.result).unwrap();
         println!("strategy_str {}", amount_str);
@@ -200,6 +203,7 @@ async fn get_strategy(user_account_id: &AccountId) -> Option<StrategyData> {
     } else {
         None
     }
+    */
 }
 
 
@@ -246,6 +250,18 @@ fn get_pubkey(pri_key_str:&str) -> String{
     pubkey.as_slice()[1..].to_vec().encode_hex()
 }
 
+/***
+
+pub fn ed25519_sign_data2(prikey_bytes_hex: &str, data_hex: &str) -> String {
+   let prikey_bytes = hex::decode(prikey_bytes_hex).unwrap();
+    let data = hex::decode(data_hex).unwrap();
+
+    println!("ed25519_secret {:?}", prikey_bytes);
+    let secret_key = ed25519_dalek::Keypair::from_bytes(&prikey_bytes).unwrap();
+    let sig = secret_key.sign(&data);
+    sig.to_string()
+}
+*/
 fn ed25519_sign_data(prikey_bytes:&[u8], data:&str) -> String{
     let secret_key = ed25519_dalek::Keypair::from_bytes(&prikey_bytes).unwrap();
     secret_key.sign(data.as_bytes()).to_string()
@@ -290,7 +306,8 @@ async fn main() {
         to: receiver_id,
         coin_id: DW20_CID.to_owned(),
         amount: transfer_amount,
-        memo:None
+        memo:None,
+        expire_at: 1808570727000,
     };
     let coin_tx_str = serde_json::to_string(&coin_tx_info).unwrap();
 
@@ -301,10 +318,13 @@ async fn main() {
         {
             let prikey: SecretKey = x.parse().unwrap();
             let prikey_byte = prikey.unwrap_as_ed25519().0.as_slice();
-            SignInfo {
+            println!("prikey {}",hex::encode(prikey_byte));
+            let sig = SignInfo {
                 pubkey: get_pubkey(x),
                 signature: ed25519_sign_data(prikey_byte, &coin_tx_str),
-            }
+            };
+            println!("{:#?}",sig);
+            sig
         }
     ).collect();
     let send_money_txid = send_money(signer,sigs,coin_tx_info).await.unwrap();

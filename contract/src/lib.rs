@@ -15,6 +15,7 @@ use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::{log, near_bindgen, env, AccountId, require, Gas, Promise, PromiseError, serde_json};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Serialize, Deserialize};
+use near_sdk::collections::{LookupMap,LookupSet};
 use ed25519_dalek::Verifier;
 use uint::hex;
 
@@ -42,8 +43,10 @@ impl fmt::Display for TxStatus {
 #[derive(BorshDeserialize, BorshSerialize)]
 pub struct Contract {
     owner: AccountId,
-    user_strategy: HashMap<AccountId, StrategyData>,
-    success_tx: HashSet<Index>,
+    user_strategy: LookupMap<AccountId, StrategyData>,
+    success_tx: LookupSet<Index>,
+    success_tx2: LookupSet<Index>,
+    TestBool:bool,
 }
 
 //delete it
@@ -52,8 +55,10 @@ impl Default for Contract {
     fn default() -> Self {
         Self {
             owner: AccountId::from_str("node0").unwrap(),
-            user_strategy: HashMap::new(),
-            success_tx: HashSet::new(),
+            user_strategy: LookupMap::new(b"m"),
+            success_tx: LookupSet::new(b"m"),
+            success_tx2: LookupSet::new(b"m"),
+            TestBool: false,
         }
     }
 }
@@ -127,13 +132,16 @@ impl Contract {
         txs_index.into_iter().zip(values.into_iter()).collect()
     }
 
-    fn call_chainless_transfer_from(sender_id:&AccountId,coin_id:&AccountId,receiver_id:&AccountId,amount: U128,memo:Option<String>) -> Promise{
+    fn call_chainless_transfer_from(&mut self,tx_index:Index,sender_id:&AccountId,coin_id:&AccountId,receiver_id:&AccountId,amount: U128,memo:Option<String>) -> Promise{
         log!("start transfer {}(coin_id) {}(sender_id) {}(receiver_id) {}(amount)",
                      coin_id.to_string(),
                      sender_id.to_string(),
                      receiver_id.to_string(),
                      amount.0
         );
+        //todo: move to callback
+        log!("index {} ft_transfer was successful2!",tx_index);
+        self.success_tx.insert(&tx_index);
         coin::ext(coin_id.to_owned())
             .with_static_gas(Gas(5*TGAS))
             .chainless_transfer_from(sender_id.to_owned(),receiver_id.to_owned(),amount,memo)
@@ -153,7 +161,7 @@ impl Contract {
             env::log_str("ft_transfer failed...");
             return false;
         } else {
-            env::log_str("ft_transfer was successful!");
+            env::log_str("ft_transfer was successful2!");
             //todo: get tx_index from memo
             //self.success_tx.insert(tx_index);
             return true;
@@ -166,8 +174,10 @@ impl Contract {
         let caller = env::signer_account_id();
         Contract{
             owner: caller,
-            user_strategy: HashMap::new(),
-            success_tx: HashSet::new(),
+            user_strategy: LookupMap::new(b"m"),
+            success_tx: LookupSet::new(b"m"),
+            success_tx2: LookupSet::new(b"m"),
+            TestBool: true
         }
     }
 
@@ -196,36 +206,22 @@ impl Contract {
             main_device_pubkey,
             servant_device_pubkey,
         };
-        self.user_strategy.insert(user_account_id.clone(), strategy);
+        self.user_strategy.insert(&user_account_id, &strategy);
         log!("set {}'s strategy successfully",user_account_id.to_string());
     }
 
-
-    pub fn set_strategy2(&mut self,
-                        user_account_id: AccountId,
-                        main_device_pubkey: String,
-                        servant_device_pubkey: Vec<String>,
-                        rank_arr: Vec<MultiSigRank>,
-                        loop_time: u32
-
-    ) {
-
-        //todo: span must be serial
-        //todo: must be called by owner
-        //let multi_sig_ranks = rank_arr.iter().map(|&x| x.into()).collect();
-        let multi_sig_ranks = rank_arr;
-        let strategy = StrategyData {
-            multi_sig_ranks,
-            main_device_pubkey,
-            servant_device_pubkey,
-        };
-        let range :Vec<u32> = (0..loop_time).collect();
-        for x in range {
-            let x = format!("{}.node0",x);
-            let user_account_id = AccountId::from_str(&x).unwrap();
-            self.user_strategy.insert(user_account_id.clone(), strategy.clone());
-        }
-        log!("set {}'s strategy successfully",user_account_id.to_string());
+    /***
+    //todo: cann't iter
+    pub fn clear_all(&mut self){
+        self.user_strategy.clear();
+        self.success_tx.clear();
+    }
+     */
+    pub fn remove_account_strategy(&mut self,acc: AccountId){
+        self.user_strategy.remove(&acc);
+    }
+    pub fn remove_tx_index(&mut self,index:Index){
+        self.success_tx.remove(&index);
     }
 
     #[private]
@@ -244,7 +240,7 @@ impl Contract {
     }
 
     pub fn get_strategy(&self,user_account_id: AccountId) -> Option<StrategyData>{
-        self.user_strategy.get(&user_account_id).as_ref().map(|&data| (*data).clone())
+        self.user_strategy.get(&user_account_id).as_ref().map(|data| data.to_owned())
     }
 
     pub fn send_money(&mut self,
@@ -292,7 +288,7 @@ impl Contract {
         if let Err(error) = check_inputs() {
             require!(false,error)
         }
-        Self::call_chainless_transfer_from(&caller,&coin_id,&to,amount.into(),memo)
+        self.call_chainless_transfer_from(tx_index,&caller,&coin_id,&to,amount.into(),memo)
     }
 }
 
