@@ -5,7 +5,8 @@ pub use crate::external_coin::*;
 
 
 use std::cmp::max;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fmt::format;
 use std::ops::Deref;
 use std::str::FromStr;
@@ -17,6 +18,24 @@ use near_sdk::serde::{Serialize, Deserialize};
 use ed25519_dalek::Verifier;
 use uint::hex;
 
+type Index = u64;
+
+//考虑到跨合约调用无法原子操作，以及合约本身一些条件不满足的报错，且链上交易监控工作量大
+//因此在合约记录成功交易的，给应用层进行判断
+
+/***
+impl fmt::Display for TxStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let description = match self {
+            Self::Created => "Created",
+            Self::Failed => "Failed",
+            Self::Successful => "Successful",
+        };
+        write!(f, "{}", description)
+    }
+}
+
+ */
 
 // Define the contract structure
 #[near_bindgen]
@@ -24,6 +43,7 @@ use uint::hex;
 pub struct Contract {
     owner: AccountId,
     user_strategy: HashMap<AccountId, StrategyData>,
+    success_tx: HashSet<Index>,
 }
 
 //delete it
@@ -33,6 +53,7 @@ impl Default for Contract {
         Self {
             owner: AccountId::from_str("node0").unwrap(),
             user_strategy: HashMap::new(),
+            success_tx: HashSet::new(),
         }
     }
 }
@@ -101,6 +122,11 @@ impl Contract {
         }
     }
 
+    pub fn get_txs_state(&self, txs_index:Vec<Index>) -> Vec<(Index, bool)> {
+        let values:Vec<bool> = txs_index.iter().map(|index| self.success_tx.contains(index)).collect();
+        txs_index.into_iter().zip(values.into_iter()).collect()
+    }
+
     fn call_chainless_transfer_from(sender_id:&AccountId,coin_id:&AccountId,receiver_id:&AccountId,amount: U128,memo:Option<String>) -> Promise{
         log!("start transfer {}(coin_id) {}(sender_id) {}(receiver_id) {}(amount)",
                      coin_id.to_string(),
@@ -120,7 +146,7 @@ impl Contract {
     }
 
     #[private] // Public - but only callable by env::current_account_id()
-    pub fn call_chainless_transfer_from_callback(&self, #[callback_result] call_result: Result<(), PromiseError>) -> bool {
+    pub fn call_chainless_transfer_from_callback(&mut self, #[callback_result] call_result: Result<(), PromiseError>) -> bool {
         // Return whether or not the promise succeeded using the method outlined in external_coin
         //fixme: get return info
         if call_result.is_err() {
@@ -128,6 +154,8 @@ impl Contract {
             return false;
         } else {
             env::log_str("ft_transfer was successful!");
+            //todo: get tx_index from memo
+            //self.success_tx.insert(tx_index);
             return true;
         }
     }
@@ -139,6 +167,7 @@ impl Contract {
         Contract{
             owner: caller,
             user_strategy: HashMap::new(),
+            success_tx: HashSet::new(),
         }
     }
 
@@ -218,13 +247,15 @@ impl Contract {
         self.user_strategy.get(&user_account_id).as_ref().map(|&data| (*data).clone())
     }
 
-    pub fn send_money(&self,
+    pub fn send_money(&mut self,
+                      tx_index: Index,
                       servant_device_sigs: Vec<SignInfo>,
                       coin_tx: CoinTx,
     ) -> Promise{
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
         let CoinTx{ from,to,coin_id,amount,memo,expire_at} = coin_tx;
         let caller = env::predecessor_account_id();
+
         require!(caller.eq(&from),"from must be  equal caller");
 
         let check_inputs = || -> Result<(), String>{
