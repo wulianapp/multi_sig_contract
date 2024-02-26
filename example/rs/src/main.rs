@@ -267,6 +267,42 @@ fn ed25519_sign_data(prikey_bytes:&[u8], data:&str) -> String{
     secret_key.sign(data.as_bytes()).to_string()
 }
 
+/***
+fn gen_replace_action(){
+    let set_strategy_actions = vec![
+        Action::FunctionCall(*Box::new(FunctionCallAction {
+        method_name: "send_money".to_string(),
+        args: json!({
+                "servant_device_sigs": servant_device_sigs,
+                "coin_tx": coin_tx,
+            })
+            .to_string()
+            .into_bytes(),
+        gas: 300000000000000, // 100 TeraGas
+        deposit: 0,
+    })),
+        
+    ];
+
+    let mut transaction = gen_transaction(&signer, &MULTI_SIG_CID.to_string()).await;
+    transaction.actions = set_strategy_actions;
+    let signature = signer.sign(transaction.get_hash_and_size().0.as_ref());
+
+    let tx = SignedTransaction::new(signature, transaction);
+    let request = methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest {
+        signed_transaction: tx.clone(),
+    };
+
+    println!("call set strategy txid {}",&tx.get_hash().to_string());
+
+    let rep = CHAIN_CLIENT.call(request).await.unwrap();
+    if let FinalExecutionStatus::Failure(error) = rep.status {
+        Err(error.to_string())?;
+    }
+    let tx_id = rep.transaction.hash.to_string();
+    Ok(tx_id)
+}
+***/
 #[tokio::main]
 async fn main() {
     let pri_key = "ed25519:cM3cWYumPkSTn56ELfn2mTTYdf9xzJMJjLQnCFq8dgbJ3x97hw7ezkrcnbk4nedPLPMga3dCGZB51TxWaGuPtwE";
@@ -278,6 +314,10 @@ async fn main() {
     let signer = near_crypto::InMemorySigner::from_secret_key(signer_account_id.to_owned(), secret_key);
 
     let receiver_id = AccountId::from_str("test1").unwrap();
+
+    let strategy_str = get_strategy(&signer_account_id).await;
+    println!("strategy_str2 {:#?}", strategy_str);
+    return;
 
     let servant_pubkey = servant_keys().as_slice()[..3].iter().map(|x| {
         let secret_key = near_crypto::SecretKey::from_str(x).unwrap();

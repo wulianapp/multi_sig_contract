@@ -21,23 +21,6 @@ use uint::hex;
 
 type Index = u64;
 
-//考虑到跨合约调用无法原子操作，以及合约本身一些条件不满足的报错，且链上交易监控工作量大
-//因此在合约记录成功交易的，给应用层进行判断
-
-/***
-impl fmt::Display for TxStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let description = match self {
-            Self::Created => "Created",
-            Self::Failed => "Failed",
-            Self::Successful => "Successful",
-        };
-        write!(f, "{}", description)
-    }
-}
-
- */
-
 // Define the contract structure
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize)]
@@ -58,7 +41,7 @@ impl Default for Contract {
             user_strategy: LookupMap::new(b"m"),
             success_tx: LookupSet::new(b"m"),
             success_tx2: LookupSet::new(b"m"),
-            TestBool: false,
+            TestBool:false,
         }
     }
 }
@@ -82,7 +65,7 @@ fn get_servant_need(strategy: &Vec<MultiSigRank>, coin_account_id: &AccountId, a
 pub struct StrategyData {
     multi_sig_ranks: Vec<MultiSigRank>,
     //maybe  user_account_id unequal to main pub key
-    main_device_pubkey: String,
+    //main_device_pubkey: String,
     servant_device_pubkey: Vec<String>,
 }
 
@@ -117,16 +100,6 @@ pub struct SignInfo {
 
 #[near_bindgen]
 impl Contract {
-
-    pub fn get_user_strategy(&self,account_id:&AccountId) -> StrategyData {
-        match self.user_strategy.get(account_id) {
-            Some(data) => data.to_owned(),
-            None => {
-                env::panic_str(format!("{} haven't register multi_sig account", &account_id).as_str());
-            }
-        }
-    }
-
     pub fn get_txs_state(&self, txs_index:Vec<Index>) -> Vec<(Index, bool)> {
         let values:Vec<bool> = txs_index.iter().map(|index| self.success_tx.contains(index)).collect();
         txs_index.into_iter().zip(values.into_iter()).collect()
@@ -168,7 +141,8 @@ impl Contract {
         }
     }
 
-    #[init]
+    /***
+         #[init]
     #[private]
     pub fn new() -> Self{
         let caller = env::signer_account_id();
@@ -177,9 +151,12 @@ impl Contract {
             user_strategy: LookupMap::new(b"m"),
             success_tx: LookupSet::new(b"m"),
             success_tx2: LookupSet::new(b"m"),
-            TestBool: true
+            TestBool:false,
         }
     }
+     */
+    
+
 
     pub fn get_owner(){
         unimplemented!()
@@ -193,7 +170,6 @@ impl Contract {
     //#[private]
     pub fn set_strategy(&mut self,
                         user_account_id: AccountId,
-                        main_device_pubkey: String,
                         servant_device_pubkey: Vec<String>,
                         rank_arr: Vec<MultiSigRank>) {
 
@@ -203,7 +179,6 @@ impl Contract {
         let multi_sig_ranks = rank_arr;
         let strategy = StrategyData {
             multi_sig_ranks,
-            main_device_pubkey,
             servant_device_pubkey,
         };
         self.user_strategy.insert(&user_account_id, &strategy);
@@ -224,19 +199,32 @@ impl Contract {
         self.success_tx.remove(&index);
     }
 
-    #[private]
-    pub fn update_rank(){
-        unimplemented!()
+    //cover origin
+    pub fn update_rank(&mut self,
+        user_account_id: AccountId,
+        rank_arr: Vec<MultiSigRank>
+    ){
+        let mut strategy = self.user_strategy.get(&user_account_id).unwrap();
+        strategy.multi_sig_ranks = rank_arr;
+        self.user_strategy.insert(&user_account_id, &strategy);
+        log!("set {}'s strategy successfully",user_account_id.to_string());    
     }
 
-    #[private]
-    pub fn update_main_pubkey(){
-        unimplemented!()
-    }
-
-    #[private]
-    pub fn update_servant_pubkey(){
-        unimplemented!()
+    //cover origin
+    pub fn update_servant_pubkey(
+        &mut self,user_account_id: AccountId,servant_device_pubkey: Vec<String>,
+    ){
+        let mut strategy = self.user_strategy.get(&user_account_id).unwrap();
+        let new_servant_num = servant_device_pubkey.len() as u8;
+        if strategy.servant_device_pubkey.len() as u8 !=  new_servant_num{
+            strategy.multi_sig_ranks = vec![MultiSigRank{
+                min: 0u128,
+                max_eq: u128::MAX,
+                sig_num: new_servant_num,
+            }];
+        }
+        self.user_strategy.insert(&user_account_id, &strategy);
+        log!("set {}'s strategy successfully",user_account_id.to_string()); 
     }
 
     pub fn get_strategy(&self,user_account_id: AccountId) -> Option<StrategyData>{
