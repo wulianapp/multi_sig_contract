@@ -28,8 +28,6 @@ pub struct Contract {
     owner: AccountId,
     user_strategy: LookupMap<AccountId, StrategyData>,
     success_tx: LookupSet<Index>,
-    success_tx2: LookupSet<Index>,
-    TestBool:bool,
 }
 
 //delete it
@@ -40,8 +38,6 @@ impl Default for Contract {
             owner: AccountId::from_str("node0").unwrap(),
             user_strategy: LookupMap::new(b"m"),
             success_tx: LookupSet::new(b"m"),
-            success_tx2: LookupSet::new(b"m"),
-            TestBool:false,
         }
     }
 }
@@ -65,8 +61,8 @@ fn get_servant_need(strategy: &Vec<MultiSigRank>, coin_account_id: &AccountId, a
 pub struct StrategyData {
     multi_sig_ranks: Vec<MultiSigRank>,
     //maybe  user_account_id unequal to main pub key
-    //main_device_pubkey: String,
-    servant_device_pubkey: Vec<String>,
+    servant_pubkeys: Vec<String>,
+    subaccounts: Vec<AccountId>,
 }
 
 
@@ -100,10 +96,13 @@ pub struct SignInfo {
 
 #[near_bindgen]
 impl Contract {
+    
     pub fn get_txs_state(&self, txs_index:Vec<Index>) -> Vec<(Index, bool)> {
         let values:Vec<bool> = txs_index.iter().map(|index| self.success_tx.contains(index)).collect();
         txs_index.into_iter().zip(values.into_iter()).collect()
     }
+    
+
 
     fn call_chainless_transfer_from(&mut self,tx_index:Index,sender_id:&AccountId,coin_id:&AccountId,receiver_id:&AccountId,amount: U128,memo:Option<String>) -> Promise{
         log!("start transfer {}(coin_id) {}(sender_id) {}(receiver_id) {}(amount)",
@@ -113,8 +112,8 @@ impl Contract {
                      amount.0
         );
         //todo: move to callback
-        log!("index {} ft_transfer was successful2!",tx_index);
         self.success_tx.insert(&tx_index);
+        log!("index {} ft_transfer was successful2!",tx_index);
         coin::ext(coin_id.to_owned())
             .with_static_gas(Gas(5*TGAS))
             .chainless_transfer_from(sender_id.to_owned(),receiver_id.to_owned(),amount,memo)
@@ -167,22 +166,24 @@ impl Contract {
         unimplemented!()
     }
 
-    //#[private]
-    pub fn set_strategy(&mut self,
-                        user_account_id: AccountId,
-                        servant_device_pubkey: Vec<String>,
-                        rank_arr: Vec<MultiSigRank>) {
+    pub fn add_subaccounts(&mut self,main_account_id: AccountId,accounts: &mut Vec<AccountId>){
+        //todo: call must be relayer
+        let my_strategy = self.user_strategy.get(&main_account_id);
+        require!(my_strategy.is_some(),"main_account_id isn't exsit");
+        let mut my_strategy = my_strategy.unwrap();
+    
+        my_strategy.subaccounts.append(accounts);
+        self.user_strategy.insert(&main_account_id, &my_strategy);
+    }
 
-        //todo: span must be serial
-        //todo: must be called by owner
-        //let multi_sig_ranks = rank_arr.iter().map(|&x| x.into()).collect();
-        let multi_sig_ranks = rank_arr;
-        let strategy = StrategyData {
-            multi_sig_ranks,
-            servant_device_pubkey,
-        };
-        self.user_strategy.insert(&user_account_id, &strategy);
-        log!("set {}'s strategy successfully",user_account_id.to_string());
+    pub fn remove_subaccounts(&mut self,main_account_id: AccountId,accounts: Vec<AccountId>){
+        //todo: call must be relayer
+        let my_strategy = self.user_strategy.get(&main_account_id);
+        require!(my_strategy.is_some(),"main_account_id isn't exsit");
+        let mut my_strategy = my_strategy.unwrap();
+    
+        my_strategy.subaccounts = my_strategy.subaccounts.into_iter().filter(|item| !accounts.contains(item)).collect();
+        self.user_strategy.insert(&main_account_id, &my_strategy);
     }
 
     /***
@@ -199,6 +200,7 @@ impl Contract {
         self.success_tx.remove(&index);
     }
 
+    //必须是设置安全问答之后才能变更策略
     //cover origin
     pub fn update_rank(&mut self,
         user_account_id: AccountId,
@@ -216,7 +218,7 @@ impl Contract {
     ){
         let mut strategy = self.user_strategy.get(&user_account_id).unwrap();
         let new_servant_num = servant_device_pubkey.len() as u8;
-        if strategy.servant_device_pubkey.len() as u8 !=  new_servant_num{
+        if strategy.servant_pubkeys.len() as u8 !=  new_servant_num{
             strategy.multi_sig_ranks = vec![MultiSigRank{
                 min: 0u128,
                 max_eq: u128::MAX,
@@ -258,7 +260,7 @@ impl Contract {
             }
 
              for servant_device_sig in servant_device_sigs {
-                 if !my_strategy.servant_device_pubkey.contains(&servant_device_sig.pubkey){
+                 if !my_strategy.servant_pubkeys.contains(&servant_device_sig.pubkey){
                      Err(format!("{} is not belong this multi_sig_account",servant_device_sig.pubkey))?
                  }
 
@@ -277,6 +279,79 @@ impl Contract {
             require!(false,error)
         }
         self.call_chainless_transfer_from(tx_index,&caller,&coin_id,&to,amount.into(),memo)
+    }
+
+     //caller must be relayer
+     pub fn internal_transfer(&mut self,
+        main_account_id: AccountId,
+        master_sig: SignInfo,
+        servant_sigs: Vec<SignInfo>,
+        coin_tx: CoinTx,
+    ) -> Promise{
+        let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
+        let CoinTx{ from,to,coin_id,amount,expire_at,memo} = coin_tx;
+        let caller = env::signer_account_id();
+        //require!(caller.eq(&from),"from must be  equal caller");
+
+        //todo: check if main_account have master_key
+
+        //dont need check signature
+        let check_inputs = || -> Result<(), String>{
+
+            let my_strategy = self.user_strategy.get(&main_account_id).ok_or(
+                format!("{} haven't register account!",main_account_id.to_string())
+                )?;
+
+
+            if from == main_account_id && my_strategy.subaccounts.contains(&to) {
+                log!("internal transfer from main_account({}) to subaccount({})",from.to_string(),to.to_string());    
+            }else if to == main_account_id &&  my_strategy.subaccounts.contains(&from){
+                log!("internal transfer from subaccount({}) to main_account({})",from.to_string(),to.to_string());    
+            }else {
+                Err("input is illegal")?
+            }
+
+            let now = env::block_timestamp_ms();
+            if now > expire_at {
+                Err(format!("signature have been expired: now {} and expire_at {}",now,expire_at))?
+            }
+
+
+
+            let servant_need = get_servant_need(&my_strategy.multi_sig_ranks, &coin_id, amount).unwrap();
+            if servant_sigs.len() < servant_need as usize {
+                Err(format!("servant device sigs is insufficient,  need {} at least",servant_need))?
+            }
+
+                //check master sig
+                 let public_key_bytes :Vec<u8> = hex::decode(master_sig.pubkey).unwrap();
+                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
+                 let signature = ed25519_dalek::Signature::from_str(&master_sig.signature).unwrap();
+                 if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
+                     Err(format!("master signature check failed:{}",error.to_string()))?
+                 }
+
+             for servant_device_sig in servant_sigs {
+                 if !my_strategy.servant_pubkeys.contains(&servant_device_sig.pubkey){
+                     Err(format!("{} is not belong this multi_sig_account",servant_device_sig.pubkey))?
+                 }
+
+                 //check servant's sig
+                 let public_key_bytes :Vec<u8> = hex::decode(servant_device_sig.pubkey).unwrap();
+                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
+                 let signature = ed25519_dalek::Signature::from_str(&servant_device_sig.signature).unwrap();
+                 if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
+                     Err(format!("servant signature check failed:{}",error.to_string()))?
+                 }
+             }
+             Ok(())
+        };
+        //as far as possible to chose require rather than  panic_str
+        if let Err(error) = check_inputs() {
+            require!(false,error)
+        }
+        //todo: call_chainless_transfer_from_no_fee
+        self.call_chainless_transfer_from(0u64,&from,&coin_id,&to,amount.into(),memo)
     }
 }
 
