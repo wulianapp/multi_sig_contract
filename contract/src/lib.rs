@@ -21,6 +21,7 @@ use std::sync::mpsc::Receiver;
 use uint::hex;
 
 type Index = u64;
+const COIN_CONTRACT_IDS:[&'static str; 6] = ["btc.node0","eth.node0","usdt.node0","usdc.node0","dw20.node0","cly.node0"];
 
 // Define the contract structure
 #[near_bindgen]
@@ -63,12 +64,43 @@ fn get_servant_need(
         .map(|rank| rank.sig_num)
 }
 
+//获取持仓价值
+/***
+fn get_account_hold_value(
+    account_id: &AccountId,
+) -> u128 {
+    //todo: get price by oracle
+    //let coin_price = get_coin_price(coin_account_id);
+    COIN_CONTRACT_IDS.iter().map(|&addr|{
+        let coin_account = AccountId::from_str(addr).unwrap();
+        coin::ext(coin_account)
+        .with_static_gas(Gas(5 * TGAS))
+        .chainless_transfer_from(sender_id.to_owned(), receiver_id.to_owned(), amount, memo)
+        .then(
+            // Create a callback change_greeting_callback
+            Self::ext(env::current_account_id())
+                //todo: how many gas?
+                .with_static_gas(Gas(5 * TGAS))
+                .call_chainless_transfer_from_callback(),
+        )
+    })
+    .sum::<u128>()
+}
+**/
+
+#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
+pub struct SubAccConf {
+    hold_value_limit: u128,
+}
+
 #[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
 pub struct StrategyData {
+    //考虑到链上master变更之后,主账户转给子账户，主账户的签名需要验证是否是对应的master_key签的
+    master_pubkey: String,
     multi_sig_ranks: Vec<MultiSigRank>,
     //maybe  user_account_id unequal to main pub key
     servant_pubkeys: Vec<String>,
-    subaccounts: Vec<AccountId>,
+    sub_confs: HashMap<AccountId,SubAccConf>,
 }
 
 #[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
@@ -155,6 +187,9 @@ impl Contract {
             env::log_str("ft_transfer failed...");
             return false;
         } else {
+            //todo: get result
+            //  let greeting: String = call_result.unwrap();
+
             env::log_str("ft_transfer was successful2!");
             //todo: get tx_index from memo
             //self.success_tx.insert(tx_index);
@@ -188,9 +223,10 @@ impl Contract {
 
     pub fn set_strategy2(
         &mut self,
+        master_pubkey: String,
         user_account_id: AccountId,
         servant_pubkeys: Vec<String>,
-        subaccounts: Vec<AccountId>,
+        sub_confs: HashMap<AccountId,SubAccConf>,
         rank_arr: Vec<MultiSigRank>,
         
     ) {
@@ -199,8 +235,9 @@ impl Contract {
         //let multi_sig_ranks = rank_arr.iter().map(|&x| x.into()).collect();
         let multi_sig_ranks = rank_arr;
         let strategy = StrategyData {
+            master_pubkey,
             multi_sig_ranks,
-            subaccounts,
+            sub_confs,
             servant_pubkeys,
         };
         self.user_strategy.insert(user_account_id.clone(), strategy);
@@ -210,30 +247,28 @@ impl Contract {
         );
     }
 
-    pub fn add_subaccounts(&mut self, main_account_id: AccountId, accounts: &mut Vec<AccountId>) {
+    pub fn add_subaccounts(&mut self, main_account_id: AccountId, new_sub: HashMap<AccountId,SubAccConf>) {
         //todo: call must be relayer
         let my_strategy = self.user_strategy.get(&main_account_id);
         require!(my_strategy.is_some(), "main_account_id isn't exsit");
         let mut my_strategy = my_strategy.unwrap().to_owned();
-
-        my_strategy.subaccounts.append(accounts);
-        //self.user_strategy.insert(&main_account_id, &my_strategy);
-        self.user_strategy
-            .insert(main_account_id, my_strategy.to_owned())
-            .unwrap();
+        my_strategy.sub_confs.extend(new_sub);
+        self.user_strategy.insert(main_account_id, my_strategy).unwrap();
     }
 
+    //仅仅是合约解除绑定，但是链底层不删，上层检查余额是否为零
     pub fn remove_subaccounts(&mut self, main_account_id: AccountId, accounts: Vec<AccountId>) {
         //todo: call must be relayer
         let my_strategy = self.user_strategy.get(&main_account_id);
         require!(my_strategy.is_some(), "main_account_id isn't exsit");
         let mut my_strategy = my_strategy.unwrap().to_owned();
-
-        my_strategy.subaccounts = my_strategy
-            .subaccounts
+        
+        my_strategy.sub_confs = my_strategy
+            .sub_confs
             .into_iter()
-            .filter(|item| !accounts.contains(item))
+            .filter(|item| !accounts.contains(&item.0))
             .collect();
+        
         //self.user_strategy.insert(&main_account_id, &my_strategy);
         self.user_strategy
             .insert(main_account_id, my_strategy.to_owned())
@@ -283,6 +318,54 @@ impl Contract {
             }];
         }
         strategy.servant_pubkeys = servant_device_pubkey;
+        //self.user_strategy.insert(&user_account_id, &strategy);
+        self.user_strategy
+            .insert(user_account_id.clone(), strategy.to_owned())
+            .unwrap();
+        log!(
+            "set {}'s strategy successfully",
+            user_account_id.to_string()
+        );
+    }
+
+
+    pub fn update_servant_pubkey_and_master(
+        &mut self,
+        user_account_id: AccountId,
+        servant_device_pubkey: Vec<String>,
+        master_pubkey: String
+    ) {
+        let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
+        let new_servant_num = servant_device_pubkey.len() as u8;
+        if strategy.servant_pubkeys.len() as u8 != new_servant_num {
+            strategy.multi_sig_ranks = vec![MultiSigRank {
+                min: 0u128,
+                max_eq: u128::MAX,
+                sig_num: new_servant_num,
+            }];
+        }
+        strategy.master_pubkey = master_pubkey;
+
+        strategy.servant_pubkeys = servant_device_pubkey;
+        //self.user_strategy.insert(&user_account_id, &strategy);
+        self.user_strategy
+            .insert(user_account_id.clone(), strategy.to_owned())
+            .unwrap();
+        log!(
+            "set {}'s strategy successfully",
+            user_account_id.to_string()
+        );
+    }
+
+
+    pub fn update_master(
+        &mut self,
+        user_account_id: AccountId,
+        master_pubkey: String
+    ) {
+        let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
+        strategy.master_pubkey = master_pubkey;
+
         //self.user_strategy.insert(&user_account_id, &strategy);
         self.user_strategy
             .insert(user_account_id.clone(), strategy.to_owned())
@@ -370,7 +453,7 @@ impl Contract {
         self.call_chainless_transfer_from(tx_index, &caller, &coin_id, &to, amount.into(), memo)
     }
 
-    //caller must be relayer
+    //官方账号交互、免所有手续费、需要多签名
     pub fn internal_transfer_main_to_sub(
         &mut self,
         master_sig: SignInfo,
@@ -390,16 +473,25 @@ impl Contract {
         let main_account_id = from.clone();
         //require!(caller.eq(&from),"from must be  equal caller");
 
-        //todo: check if main_account have master_key
         let check_inputs = || -> Result<(), String> {
             let my_strategy = self.user_strategy.get(&main_account_id).ok_or(format!(
                 "{} haven't register account!",
                 main_account_id.to_string()
             ))?;
+            
+            //主账户的master_key和签名的master进行对比
+            if master_sig.pubkey != my_strategy.master_pubkey {
+                Err(format!(
+                    "account's master pubkey is {},but input master key is {}",
+                    my_strategy.master_pubkey, master_sig.pubkey
+                ))?
+            }
 
-            //主账户给子账户转需要验证过期时间和主账户签名和子账户签名
+
+            //主账户给子账户转需要验证过期时间和主账户签名和从设备签名
             //子账户给主账户签名只验证子账户签名，因为子账户的从设备数量为零
-            if my_strategy.subaccounts.contains(&to) {
+            let subaccount_ids: Vec<AccountId> = my_strategy.clone().sub_confs.into_keys().collect();
+            if subaccount_ids.contains(&to) {
                 log!(
                     "internal transfer from main_account({}) to subaccount({})",
                     from.to_string(),
@@ -460,6 +552,7 @@ impl Contract {
             } else {
                 Err("input is illegal")?
             }
+            
             Ok(())
         };
         //as far as possible to chose require rather than  panic_str
@@ -470,6 +563,7 @@ impl Contract {
         self.call_chainless_transfer_from(0u64, &from, &coin_id, &to, amount.into(), memo)
     }
 
+    //官方账号交互、免所有手续费
     pub fn internal_transfer_sub_to_main(
         &mut self,
         main_account_id: AccountId,
@@ -489,7 +583,8 @@ impl Contract {
             ))?;
 
             //main_account就是to，sub就是from
-            if my_strategy.subaccounts.contains(&sub_account) {
+            let subaccounts:Vec<AccountId> = my_strategy.sub_confs.clone().into_iter().map(|a| a.0).collect();
+            if subaccounts.contains(&sub_account) {
                 log!(
                     "internal transfer from main_account({}) to subaccount({})",
                     main_account_id.to_string(),
