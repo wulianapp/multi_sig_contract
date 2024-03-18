@@ -613,9 +613,9 @@ impl Contract {
         //todo: call_chainless_transfer_from_no_fee
         self.call_chainless_transfer_from(
             0u64,
-            &main_account_id,
-            &coin_id,
             &sub_account,
+            &coin_id,
+            &main_account_id,    
             amount.into(),
             None,
         )
