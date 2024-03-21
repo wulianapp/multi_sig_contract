@@ -88,7 +88,7 @@ fn get_account_hold_value(
 }
 **/
 
-#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
+#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone,Debug)]
 pub struct SubAccConf {
     hold_value_limit: u128,
 }
@@ -373,6 +373,29 @@ impl Contract {
         log!(
             "set {}'s strategy successfully",
             user_account_id.to_string()
+        );
+    }
+
+    pub fn update_subaccount_hold_limit(
+        &mut self,
+        user_account_id: AccountId,
+        subaccount: AccountId,
+        hold_limit: u128
+    ) {
+
+        if let Some(strategy) = self.user_strategy.get_mut(&user_account_id){
+            if let Some(sub_conf) = strategy.sub_confs.get_mut(&subaccount) {
+                sub_conf.hold_value_limit = hold_limit;
+            } else {
+                require!(false, "Not found subaccount");
+            }
+        }else{
+            require!(false, "Not found mainaccount");
+        }
+
+        log!(
+            "set {}'s hold limit to {} successfully",
+            subaccount.to_string(),hold_limit
         );
     }
 
