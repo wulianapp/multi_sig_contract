@@ -10,10 +10,18 @@ pub const XCC_SUCCESS: u64 = 1;
 trait Coin {
     fn ft_transfer(&mut self, receiver_id: AccountId, amount: U128, memo: Option<String>);
     fn ft_balance_of(&self, account_id: AccountId) -> U128;
-    fn chainless_transfer_from(
+    fn transfer_from(
         &mut self,
-        sender_id: AccountId,
-        receiver_id: AccountId,
+        from_id: AccountId,
+        to_id: AccountId,
+        amount: U128,
+        memo: Option<String>,
+    );
+
+    fn transfer_from_nogas(
+        &mut self,
+        from_id: AccountId,
+        to_id: AccountId,
         amount: U128,
         memo: Option<String>,
     );

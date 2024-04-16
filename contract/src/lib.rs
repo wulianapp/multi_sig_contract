@@ -1,7 +1,8 @@
-#![feature(exclusive_range_pattern)]
-
 mod external_coin;
+mod external_bridge;
 pub use crate::external_coin::*;
+pub use crate::external_bridge::*;
+
 
 use ed25519_dalek::Verifier;
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
@@ -119,6 +120,15 @@ pub struct SubAccCoinTx {
     amount: u128,
 }
 
+
+#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
+pub struct WithdrawInfo {
+    from: AccountId,
+    kind: String,
+    coin_id: AccountId,
+    amount: u128,
+}
+
 #[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
 #[serde(crate = "near_sdk::serde")]
 pub struct MultiSigRank {
@@ -166,7 +176,7 @@ impl Contract {
         log!("index {} ft_transfer was successful2!", tx_index);
         coin::ext(coin_id.to_owned())
             .with_static_gas(Gas(5 * TGAS))
-            .chainless_transfer_from(sender_id.to_owned(), receiver_id.to_owned(), amount, memo)
+            .transfer_from(sender_id.to_owned(), receiver_id.to_owned(), amount, memo)
             .then(
                 // Create a callback change_greeting_callback
                 Self::ext(env::current_account_id())
@@ -196,6 +206,88 @@ impl Contract {
             return true;
         }
     }
+
+
+
+    fn call_transfer_bridge(
+        &mut self,
+        tx_index: Index,
+        sender_id: &AccountId,
+        coin_id: &AccountId,
+        bridge_addr: &AccountId,
+        amount: U128,
+        memo: Option<String>,
+    ) -> Promise {
+        log!(
+            "start12 call_transfer_bridge {}(coin_id) {}(sender_id) {}(receiver_id) {}(amount)",
+            coin_id.to_string(),
+            sender_id.to_string(),
+            bridge_addr.to_string(),
+            amount.0
+        );
+        //todo: move to callback
+        //self.success_tx.insert(&tx_index);
+        self.success_tx.insert(tx_index);
+        log!("line: {}. index {} ft_transfer was successful32!",line!(), tx_index);
+        coin::ext(coin_id.to_owned())
+            .with_static_gas(Gas(5 * TGAS))
+            .transfer_from(sender_id.to_owned(), bridge_addr.to_owned(), amount, memo)
+            .then(
+                {
+                    log!("line {} ft_transfer was successful3!", line!());
+                    Self::ext(env::current_account_id())
+                    .with_static_gas(Gas(5 * TGAS))
+                    .call_transfer_to_bridge_callback(1500,sender_id.to_owned(),amount,coin_id.to_owned())
+                }
+                
+            )
+    }
+
+    #[private] // Public - but only callable by env::current_account_id()
+    pub fn call_transfer_to_bridge_callback(
+        &mut self,
+        chain_id: u128,
+        account_id: AccountId,
+        amount: U128,
+        token: AccountId,
+        #[callback_result] call_result: Result<(), PromiseError>,
+    ) -> Promise {
+        // Return whether or not the promise succeeded using the method outlined in external_coin
+        //fixme: get return info
+        if call_result.is_err() {
+            log!("line {} transfer_to_bridge_ failed...!", line!());
+            env::log_str("transfer_to_bridge_ failed...");
+            env::panic_str("transfer_to_bridge_ failed...");
+        } else {
+            log!("line {} transfer_to_bridge_ failed...!", line!());
+            env::log_str("transfer_to_bridge was successful!");
+            let bridge_addr = AccountId::from_str(external_bridge::BRIDGE_ADDRESS).unwrap();
+            bridge::ext(bridge_addr)
+            .with_static_gas(Gas(5 * TGAS))
+            .new_order(chain_id,account_id,amount.0,token)
+            .then(
+                Self::ext(env::current_account_id())
+                  .with_static_gas(Gas(5 * TGAS))
+                  .call_new_withdraw_order_callback(),
+            )
+        }
+    }
+
+    #[private] // Public - but only callable by env::current_account_id()
+    pub fn call_new_withdraw_order_callback(
+        &mut self,
+        #[callback_result] call_result: Result<(), PromiseError>,
+    ) -> bool {
+        if call_result.is_err() {
+            env::log_str("call_new_withdraw_order  failed...");
+            return false;
+        } else {
+            env::log_str("call_new_withdraw_order  was successful!");
+            return true;
+        }
+    }
+
+ 
 
     /***
          #[init]
@@ -398,6 +490,7 @@ impl Contract {
             subaccount.to_string(),hold_limit
         );
     }
+    
 
     pub fn get_strategy(&self, user_account_id: AccountId) -> Option<StrategyData> {
         //self.user_strategy.get(&user_account_id).as_ref().map(|data| data.to_owned())
@@ -473,8 +566,13 @@ impl Contract {
         if let Err(error) = check_inputs() {
             require!(false, error)
         }
-        self.call_chainless_transfer_from(tx_index, &caller, &coin_id, &to, amount.into(), memo)
+        if to.to_string() == BRIDGE_ADDRESS.to_string() {
+            self.call_transfer_bridge(tx_index, &caller, &coin_id, &to, amount.into(), memo)
+        }else{
+            self.call_chainless_transfer_from(tx_index, &caller, &coin_id, &to, amount.into(), memo)
+        }
     }
+
 
     //官方账号交互、免所有手续费、需要多签名
     pub fn internal_transfer_main_to_sub(
@@ -639,6 +737,127 @@ impl Contract {
             &sub_account,
             &coin_id,
             &main_account_id,    
+            amount.into(),
+            None,
+        )
+    }
+
+
+
+     //从跨链桥提币,admin签名免手续费，弃用
+    fn internal_withdraw(
+        &mut self,
+        master_sig: SignInfo,
+        servant_sigs: Vec<SignInfo>,
+        coin_tx: CoinTx,
+    ) -> Promise {
+        let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
+        let CoinTx {
+            from,
+            to: bridge_addr,
+            coin_id,
+            amount,
+            expire_at,
+            memo,
+        } = coin_tx;
+        let caller = env::signer_account_id();
+        let main_account_id = from.clone();
+        //require!(caller.eq(&from),"from must be  equal caller");
+
+        let check_inputs = || -> Result<(), String> {
+            let my_strategy = self.user_strategy.get(&main_account_id).ok_or(format!(
+                "{} haven't register account!",
+                main_account_id.to_string()
+            ))?;
+            
+            //todo: check bridge_address
+
+            //主账户的master_key和签名的master进行对比
+            if master_sig.pubkey != my_strategy.master_pubkey {
+                Err(format!(
+                    "account's master pubkey is {},but input master key is {}",
+                    my_strategy.master_pubkey, master_sig.pubkey
+                ))?
+            }
+
+
+            //todo: setup bridge_address at initial
+            if bridge_addr.to_string().contains("chainless") {
+                log!(
+                    "internal transfer from main_account({}) to subaccount({})",
+                    from.to_string(),
+                    bridge_addr.to_string()
+                );
+                let now = env::block_timestamp_ms();
+                if now > expire_at {
+                    Err(format!(
+                        "signature have been expired: now {} and expire_at {}",
+                        now, expire_at
+                    ))?
+                }
+
+                let servant_need =
+                    get_servant_need(&my_strategy.multi_sig_ranks, &coin_id, amount).unwrap();
+                if servant_sigs.len() < servant_need as usize {
+                    Err(format!(
+                        "servant device sigs is insufficient,  need {} at least",
+                        servant_need
+                    ))?
+                }
+
+                //check master sig
+                let public_key_bytes: Vec<u8> = hex::decode(master_sig.pubkey).unwrap();
+                let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
+                let signature = ed25519_dalek::Signature::from_str(&master_sig.signature).unwrap();
+                if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
+                    Err(format!(
+                        "master signature check failed:{}",
+                        error.to_string()
+                    ))?
+                }
+
+                for servant_device_sig in servant_sigs {
+                    if !my_strategy
+                        .servant_pubkeys
+                        .contains(&servant_device_sig.pubkey)
+                    {
+                        Err(format!(
+                            "{} is not belong this multi_sig_account",
+                            servant_device_sig.pubkey
+                        ))?
+                    }
+
+                    //check servant's sig
+                    let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.pubkey).unwrap();
+                    let public_key =
+                        ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
+                    let signature =
+                        ed25519_dalek::Signature::from_str(&servant_device_sig.signature).unwrap();
+                    if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
+                        Err(format!(
+                            "servant signature check failed:{}",
+                            error.to_string()
+                        ))?
+                    }
+                }
+            } else {
+                Err("input is illegal")?
+            }
+            
+            Ok(())
+        };
+        //as far as possible to chose require rather than  panic_str
+        if let Err(error) = check_inputs() {
+            require!(false, error)
+        }
+        //todo: call_chainless_transfer_from_no_fee
+        //self.call_chainless_transfer_from(0u64, &from, &coin_id, &to, amount.into(), memo)
+
+        self.call_transfer_bridge(
+            0u64,
+            &from,
+            &coin_id,
+            &bridge_addr,    
             amount.into(),
             None,
         )
