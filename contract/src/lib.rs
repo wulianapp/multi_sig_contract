@@ -532,7 +532,9 @@ impl Contract {
             }
 
             let servant_need =
-                get_servant_need(&my_strategy.multi_sig_ranks, &coin_id, amount).unwrap();
+                get_servant_need(&my_strategy.multi_sig_ranks, &coin_id, amount)
+                .unwrap_or(my_strategy.servant_pubkeys.len() as u8);
+
             if servant_device_sigs.len() < servant_need as usize {
                 Err(format!(
                     "servant device sigs is insufficient,  need {} at least",
