@@ -24,6 +24,15 @@ use uint::hex;
 type Index = u64;
 const COIN_CONTRACT_IDS:[&'static str; 6] = ["btc.node0","eth.node0","usdt.node0","usdc.node0","dw20.node0","cly.node0"];
 
+#[derive(PartialEq,Debug)]
+pub enum TxType{
+    //主账户给主账户转，要手续费，用户签
+    Normal,
+    Main2Sub,
+    Sub2Main,
+    Main2Bridge,
+}
+
 // Define the contract structure
 #[near_bindgen]
 #[derive(BorshDeserialize, BorshSerialize)]
@@ -91,6 +100,7 @@ fn get_account_hold_value(
 
 #[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone,Debug)]
 pub struct SubAccConf {
+    pubkey:String,
     hold_value_limit: u128,
 }
 
@@ -140,7 +150,7 @@ pub struct MultiSigRank {
 #[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
 #[serde(crate = "near_sdk::serde")]
 pub struct SignInfo {
-    pubkey: String,
+    account_id: String,
     signature: String,
 }
 
@@ -162,6 +172,7 @@ impl Contract {
         receiver_id: &AccountId,
         amount: U128,
         memo: Option<String>,
+        tx_type: TxType
     ) -> Promise {
         log!(
             "start transfer {}(coin_id) {}(sender_id) {}(receiver_id) {}(amount)",
@@ -174,16 +185,28 @@ impl Contract {
         //self.success_tx.insert(&tx_index);
         self.success_tx.insert(tx_index);
         log!("index {} ft_transfer was successful2!", tx_index);
-        coin::ext(coin_id.to_owned())
+        //子账户给主账户转账要求免费,提现要有手续费
+        let transfer_promise = if tx_type == TxType::Sub2Main || tx_type == TxType::Main2Sub {
+            coin::ext(coin_id.to_owned())
+            .with_static_gas(Gas(5 * TGAS))
+            .transfer_from_nongas(sender_id.to_owned(), receiver_id.to_owned(), amount, memo)
+        }else{
+            coin::ext(coin_id.to_owned())
             .with_static_gas(Gas(5 * TGAS))
             .transfer_from(sender_id.to_owned(), receiver_id.to_owned(), amount, memo)
-            .then(
-                // Create a callback change_greeting_callback
-                Self::ext(env::current_account_id())
-                    //todo: how many gas?
-                    .with_static_gas(Gas(5 * TGAS))
-                    .call_chainless_transfer_from_callback(),
-            )
+        };
+
+        transfer_promise.then(
+                {
+                    let call_handle = Self::ext(env::current_account_id()).with_static_gas(Gas(5 * TGAS));
+                    if tx_type == TxType::Main2Bridge{
+                        call_handle.call_transfer_to_bridge_callback(1500,sender_id.to_owned(),amount,coin_id.to_owned())
+                    }else{
+                        call_handle.call_chainless_transfer_from_callback()
+                    }
+                
+                } 
+        )
     }
 
     #[private] // Public - but only callable by env::current_account_id()
@@ -208,7 +231,7 @@ impl Contract {
     }
 
 
-
+    /*** 
     fn call_transfer_bridge(
         &mut self,
         tx_index: Index,
@@ -242,6 +265,7 @@ impl Contract {
                 
             )
     }
+    ***/
 
     #[private] // Public - but only callable by env::current_account_id()
     pub fn call_transfer_to_bridge_callback(
@@ -273,7 +297,7 @@ impl Contract {
         }
     }
 
-    #[private] // Public - but only callable by env::current_account_id()
+    #[private] 
     pub fn call_new_withdraw_order_callback(
         &mut self,
         #[callback_result] call_result: Result<(), PromiseError>,
@@ -545,16 +569,16 @@ impl Contract {
             for servant_device_sig in servant_device_sigs {
                 if !my_strategy
                     .servant_pubkeys
-                    .contains(&servant_device_sig.pubkey)
+                    .contains(&servant_device_sig.account_id)
                 {
                     Err(format!(
                         "{} is not belong this multi_sig_account",
-                        servant_device_sig.pubkey
+                        servant_device_sig.account_id
                     ))?
                 }
 
                 //check servant's sig
-                let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.pubkey).unwrap();
+                let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.account_id).unwrap();
                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                 let signature =
                     ed25519_dalek::Signature::from_str(&servant_device_sig.signature).unwrap();
@@ -568,11 +592,12 @@ impl Contract {
         if let Err(error) = check_inputs() {
             require!(false, error)
         }
-        if to.to_string() == BRIDGE_ADDRESS.to_string() {
-            self.call_transfer_bridge(tx_index, &caller, &coin_id, &to, amount.into(), memo)
+        let tx_type = if to.to_string() == BRIDGE_ADDRESS.to_string() {
+            TxType::Main2Bridge
         }else{
-            self.call_chainless_transfer_from(tx_index, &caller, &coin_id, &to, amount.into(), memo)
-        }
+            TxType::Normal
+        };
+        self.call_chainless_transfer_from(tx_index, &caller, &coin_id, &to, amount.into(), memo,tx_type)
     }
 
 
@@ -603,10 +628,10 @@ impl Contract {
             ))?;
             
             //主账户的master_key和签名的master进行对比
-            if master_sig.pubkey != my_strategy.master_pubkey {
+            if master_sig.account_id != my_strategy.master_pubkey {
                 Err(format!(
                     "account's master pubkey is {},but input master key is {}",
-                    my_strategy.master_pubkey, master_sig.pubkey
+                    my_strategy.master_pubkey, master_sig.account_id
                 ))?
             }
 
@@ -638,7 +663,7 @@ impl Contract {
                 }
 
                 //check master sig
-                let public_key_bytes: Vec<u8> = hex::decode(master_sig.pubkey).unwrap();
+                let public_key_bytes: Vec<u8> = hex::decode(master_sig.account_id).unwrap();
                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                 let signature = ed25519_dalek::Signature::from_str(&master_sig.signature).unwrap();
                 if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
@@ -651,16 +676,16 @@ impl Contract {
                 for servant_device_sig in servant_sigs {
                     if !my_strategy
                         .servant_pubkeys
-                        .contains(&servant_device_sig.pubkey)
+                        .contains(&servant_device_sig.account_id)
                     {
                         Err(format!(
                             "{} is not belong this multi_sig_account",
-                            servant_device_sig.pubkey
+                            servant_device_sig.account_id
                         ))?
                     }
 
                     //check servant's sig
-                    let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.pubkey).unwrap();
+                    let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.account_id).unwrap();
                     let public_key =
                         ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                     let signature =
@@ -683,7 +708,7 @@ impl Contract {
             require!(false, error)
         }
         //todo: call_chainless_transfer_from_no_fee
-        self.call_chainless_transfer_from(0u64, &from, &coin_id, &to, amount.into(), memo)
+        self.call_chainless_transfer_from(0u64, &from, &coin_id, &to, amount.into(), memo,TxType::Main2Sub)
     }
 
     //官方账号交互、免所有手续费
@@ -696,7 +721,7 @@ impl Contract {
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
         let SubAccCoinTx { coin_id, amount } = coin_tx;
         let caller = env::signer_account_id();
-        let sub_account = AccountId::from_str(&sub_sig.pubkey).unwrap();
+        let sub_account = AccountId::from_str(&sub_sig.account_id).unwrap();
         //require!(caller.eq(&from),"from must be  equal caller");
 
         let check_inputs = || -> Result<(), String> {
@@ -706,8 +731,8 @@ impl Contract {
             ))?;
 
             //main_account就是to，sub就是from
-            let subaccounts:Vec<AccountId> = my_strategy.sub_confs.clone().into_iter().map(|a| a.0).collect();
-            if subaccounts.contains(&sub_account) {
+            //if subaccounts.contains(&sub_account) {
+            if let Some(conf) = my_strategy.sub_confs.get(&sub_account){
                 log!(
                     "internal transfer from main_account({}) to subaccount({})",
                     main_account_id.to_string(),
@@ -715,7 +740,8 @@ impl Contract {
                 );
 
                 //check master sig
-                let public_key_bytes: Vec<u8> = hex::decode(sub_sig.pubkey).unwrap();
+                //let pubkey_str = 
+                let public_key_bytes: Vec<u8> = hex::decode(&conf.pubkey).unwrap();
                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                 let signature = ed25519_dalek::Signature::from_str(&sub_sig.signature).unwrap();
                 if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
@@ -726,7 +752,7 @@ impl Contract {
                 }
             } else {
                 Err("input is illegal")?
-            }
+            };
             Ok(())
         };
         //as far as possible to chose require rather than  panic_str
@@ -741,6 +767,7 @@ impl Contract {
             &main_account_id,    
             amount.into(),
             None,
+            TxType::Sub2Main
         )
     }
 
@@ -775,10 +802,10 @@ impl Contract {
             //todo: check bridge_address
 
             //主账户的master_key和签名的master进行对比
-            if master_sig.pubkey != my_strategy.master_pubkey {
+            if master_sig.account_id != my_strategy.master_pubkey {
                 Err(format!(
                     "account's master pubkey is {},but input master key is {}",
-                    my_strategy.master_pubkey, master_sig.pubkey
+                    my_strategy.master_pubkey, master_sig.account_id
                 ))?
             }
 
@@ -808,7 +835,7 @@ impl Contract {
                 }
 
                 //check master sig
-                let public_key_bytes: Vec<u8> = hex::decode(master_sig.pubkey).unwrap();
+                let public_key_bytes: Vec<u8> = hex::decode(master_sig.account_id).unwrap();
                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                 let signature = ed25519_dalek::Signature::from_str(&master_sig.signature).unwrap();
                 if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
@@ -821,16 +848,16 @@ impl Contract {
                 for servant_device_sig in servant_sigs {
                     if !my_strategy
                         .servant_pubkeys
-                        .contains(&servant_device_sig.pubkey)
+                        .contains(&servant_device_sig.account_id)
                     {
                         Err(format!(
                             "{} is not belong this multi_sig_account",
-                            servant_device_sig.pubkey
+                            servant_device_sig.account_id
                         ))?
                     }
 
                     //check servant's sig
-                    let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.pubkey).unwrap();
+                    let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.account_id).unwrap();
                     let public_key =
                         ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                     let signature =
@@ -855,13 +882,14 @@ impl Contract {
         //todo: call_chainless_transfer_from_no_fee
         //self.call_chainless_transfer_from(0u64, &from, &coin_id, &to, amount.into(), memo)
 
-        self.call_transfer_bridge(
+        self.call_chainless_transfer_from(
             0u64,
             &from,
             &coin_id,
             &bridge_addr,    
             amount.into(),
             None,
+            TxType::Main2Bridge
         )
     }
 }
@@ -917,14 +945,14 @@ mod tests {
         let coin_account_id = AccountId::from_str("dw20.node0").unwrap();
         let amount = 200u128;
         let sign_info1 = SignInfo {
-            pubkey: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
+            account_id: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
             signature:
                 "11bfe4d0b7705f6c57282a9030b22505ce2641547e9f246561d75a284f5a6e0a10e596fa7e702b6f89\
              7ad19c859ee880d4d1e80e521d91c53cc8827b67550001"
                     .to_string(),
         };
         let sign_info2 = SignInfo {
-            pubkey: "0000000000000000000000000000000000000000000000000000000000000002".to_string(),
+            account_id: "0000000000000000000000000000000000000000000000000000000000000002".to_string(),
             signature:
                 "11bfe4d0b7705f6c57282a9030b22505ce2641547e9f246561d75a284f5a6e0a10e596fa7e70\
              2b6f897ad19c859ee880d4d1e80e521d91c53cc8827b67550002"

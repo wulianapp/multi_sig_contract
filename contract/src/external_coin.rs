@@ -18,7 +18,7 @@ trait Coin {
         memo: Option<String>,
     );
 
-    fn transfer_from_nogas(
+    fn transfer_from_nongas(
         &mut self,
         from_id: AccountId,
         to_id: AccountId,
