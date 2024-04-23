@@ -149,7 +149,14 @@ pub struct MultiSigRank {
 
 #[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
 #[serde(crate = "near_sdk::serde")]
-pub struct SignInfo {
+pub struct PubkeySignInfo {
+    pubkey: String,
+    signature: String,
+}
+
+#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
+#[serde(crate = "near_sdk::serde")]
+pub struct AccountSignInfo {
     account_id: String,
     signature: String,
 }
@@ -429,7 +436,7 @@ impl Contract {
         if strategy.servant_pubkeys.len() as u8 != new_servant_num {
             strategy.multi_sig_ranks = vec![MultiSigRank {
                 min: 0u128,
-                max_eq: u128::MAX,
+                max_eq: 1_000_000_000_000_000_000_000_000u128,//one million
                 sig_num: new_servant_num,
             }];
         }
@@ -525,7 +532,7 @@ impl Contract {
     pub fn send_money(
         &mut self,
         tx_index: Index,
-        servant_device_sigs: Vec<SignInfo>,
+        servant_device_sigs: Vec<PubkeySignInfo>,
         coin_tx: CoinTx,
     ) -> Promise {
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
@@ -569,16 +576,16 @@ impl Contract {
             for servant_device_sig in servant_device_sigs {
                 if !my_strategy
                     .servant_pubkeys
-                    .contains(&servant_device_sig.account_id)
+                    .contains(&servant_device_sig.pubkey)
                 {
                     Err(format!(
                         "{} is not belong this multi_sig_account",
-                        servant_device_sig.account_id
+                        servant_device_sig.pubkey
                     ))?
                 }
 
                 //check servant's sig
-                let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.account_id).unwrap();
+                let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.pubkey).unwrap();
                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                 let signature =
                     ed25519_dalek::Signature::from_str(&servant_device_sig.signature).unwrap();
@@ -604,8 +611,8 @@ impl Contract {
     //官方账号交互、免所有手续费、需要多签名
     pub fn internal_transfer_main_to_sub(
         &mut self,
-        master_sig: SignInfo,
-        servant_sigs: Vec<SignInfo>,
+        master_sig: PubkeySignInfo,
+        servant_sigs: Vec<PubkeySignInfo>,
         coin_tx: CoinTx,
     ) -> Promise {
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
@@ -618,6 +625,7 @@ impl Contract {
             memo,
         } = coin_tx;
         let caller = env::signer_account_id();
+        //todo: from == master_sig.account_id
         let main_account_id = from.clone();
         //require!(caller.eq(&from),"from must be  equal caller");
 
@@ -628,10 +636,10 @@ impl Contract {
             ))?;
             
             //主账户的master_key和签名的master进行对比
-            if master_sig.account_id != my_strategy.master_pubkey {
+            if master_sig.pubkey != my_strategy.master_pubkey {
                 Err(format!(
                     "account's master pubkey is {},but input master key is {}",
-                    my_strategy.master_pubkey, master_sig.account_id
+                    my_strategy.master_pubkey, master_sig.pubkey
                 ))?
             }
 
@@ -663,7 +671,7 @@ impl Contract {
                 }
 
                 //check master sig
-                let public_key_bytes: Vec<u8> = hex::decode(master_sig.account_id).unwrap();
+                let public_key_bytes: Vec<u8> = hex::decode(master_sig.pubkey).unwrap();
                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                 let signature = ed25519_dalek::Signature::from_str(&master_sig.signature).unwrap();
                 if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
@@ -676,16 +684,16 @@ impl Contract {
                 for servant_device_sig in servant_sigs {
                     if !my_strategy
                         .servant_pubkeys
-                        .contains(&servant_device_sig.account_id)
+                        .contains(&servant_device_sig.pubkey)
                     {
                         Err(format!(
                             "{} is not belong this multi_sig_account",
-                            servant_device_sig.account_id
+                            servant_device_sig.pubkey
                         ))?
                     }
 
                     //check servant's sig
-                    let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.account_id).unwrap();
+                    let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.pubkey).unwrap();
                     let public_key =
                         ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                     let signature =
@@ -715,7 +723,7 @@ impl Contract {
     pub fn internal_transfer_sub_to_main(
         &mut self,
         main_account_id: AccountId,
-        sub_sig: SignInfo,
+        sub_sig: AccountSignInfo,
         coin_tx: SubAccCoinTx,
     ) -> Promise {
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
@@ -776,8 +784,8 @@ impl Contract {
      //从跨链桥提币,admin签名免手续费，弃用
     fn internal_withdraw(
         &mut self,
-        master_sig: SignInfo,
-        servant_sigs: Vec<SignInfo>,
+        master_sig: PubkeySignInfo,
+        servant_sigs: Vec<PubkeySignInfo>,
         coin_tx: CoinTx,
     ) -> Promise {
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
@@ -802,10 +810,10 @@ impl Contract {
             //todo: check bridge_address
 
             //主账户的master_key和签名的master进行对比
-            if master_sig.account_id != my_strategy.master_pubkey {
+            if master_sig.pubkey != my_strategy.master_pubkey {
                 Err(format!(
                     "account's master pubkey is {},but input master key is {}",
-                    my_strategy.master_pubkey, master_sig.account_id
+                    my_strategy.master_pubkey, master_sig.pubkey
                 ))?
             }
 
@@ -835,7 +843,7 @@ impl Contract {
                 }
 
                 //check master sig
-                let public_key_bytes: Vec<u8> = hex::decode(master_sig.account_id).unwrap();
+                let public_key_bytes: Vec<u8> = hex::decode(master_sig.pubkey).unwrap();
                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                 let signature = ed25519_dalek::Signature::from_str(&master_sig.signature).unwrap();
                 if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
@@ -848,16 +856,16 @@ impl Contract {
                 for servant_device_sig in servant_sigs {
                     if !my_strategy
                         .servant_pubkeys
-                        .contains(&servant_device_sig.account_id)
+                        .contains(&servant_device_sig.pubkey)
                     {
                         Err(format!(
                             "{} is not belong this multi_sig_account",
-                            servant_device_sig.account_id
+                            servant_device_sig.pubkey
                         ))?
                     }
 
                     //check servant's sig
-                    let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.account_id).unwrap();
+                    let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.pubkey).unwrap();
                     let public_key =
                         ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                     let signature =
@@ -944,14 +952,14 @@ mod tests {
                 .unwrap();
         let coin_account_id = AccountId::from_str("dw20.node0").unwrap();
         let amount = 200u128;
-        let sign_info1 = SignInfo {
+        let sign_info1 = PubkeySignInfo {
             account_id: "0000000000000000000000000000000000000000000000000000000000000001".to_string(),
             signature:
                 "11bfe4d0b7705f6c57282a9030b22505ce2641547e9f246561d75a284f5a6e0a10e596fa7e702b6f89\
              7ad19c859ee880d4d1e80e521d91c53cc8827b67550001"
                     .to_string(),
         };
-        let sign_info2 = SignInfo {
+        let sign_info2 = PubkeySignInfo {
             account_id: "0000000000000000000000000000000000000000000000000000000000000002".to_string(),
             signature:
                 "11bfe4d0b7705f6c57282a9030b22505ce2641547e9f246561d75a284f5a6e0a10e596fa7e70\
