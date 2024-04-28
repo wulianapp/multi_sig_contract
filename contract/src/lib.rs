@@ -20,6 +20,8 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::mpsc::Receiver;
 use uint::hex;
+use std::collections::BTreeMap;
+
 
 type Index = u64;
 const COIN_CONTRACT_IDS:[&'static str; 6] = ["btc.node0","eth.node0","usdt.node0","usdc.node0","dw20.node0","cly.node0"];
@@ -111,7 +113,7 @@ pub struct StrategyData {
     multi_sig_ranks: Vec<MultiSigRank>,
     //maybe  user_account_id unequal to main pub key
     servant_pubkeys: Vec<String>,
-    sub_confs: HashMap<AccountId,SubAccConf>,
+    sub_confs: BTreeMap<AccountId,SubAccConf>,
 }
 
 #[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
@@ -349,7 +351,7 @@ impl Contract {
         master_pubkey: String,
         user_account_id: AccountId,
         servant_pubkeys: Vec<String>,
-        sub_confs: HashMap<AccountId,SubAccConf>,
+        sub_confs: BTreeMap<AccountId,SubAccConf>,
         rank_arr: Vec<MultiSigRank>,
         
     ) {
