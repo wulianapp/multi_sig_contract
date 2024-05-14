@@ -417,7 +417,7 @@ impl Contract {
     pub fn update_rank(&mut self, user_account_id: AccountId, rank_arr: Vec<MultiSigRank>) {
         let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
         //todo: 更多的校验
-        if rank_arr.len() != strategy.servant_pubkeys.len() + 1{
+        if rank_arr.len() > strategy.servant_pubkeys.len() + 1{
             require!(false, "rank size must be equal to servant size");
         }
         strategy.multi_sig_ranks = rank_arr;
