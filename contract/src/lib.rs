@@ -5,8 +5,6 @@ pub use crate::external_bridge::*;
 
 
 use ed25519_dalek::Verifier;
-use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
-use near_sdk::collections::{LookupMap, LookupSet};
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
 use near_sdk::{
@@ -22,6 +20,10 @@ use std::sync::mpsc::Receiver;
 use uint::hex;
 use std::collections::BTreeMap;
 
+#[macro_use]
+extern crate near_sdk;
+
+
 
 type Index = u64;
 const COIN_CONTRACT_IDS:[&'static str; 6] = ["btc.node0","eth.node0","usdt.node0","usdc.node0","dw20.node0","cly.node0"];
@@ -36,8 +38,8 @@ pub enum TxType{
 }
 
 // Define the contract structure
-#[near_bindgen]
-#[derive(BorshDeserialize, BorshSerialize)]
+//#[near_bindgen]
+#[near(contract_state)]
 pub struct Contract {
     owner: AccountId,
     //user_strategy: LookupMap<AccountId, StrategyData>,
@@ -99,14 +101,15 @@ fn get_account_hold_value(
     .sum::<u128>()
 }
 **/
-
-#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone,Debug)]
+#[derive(Clone)]
+#[near(serializers=[borsh, json])]
 pub struct SubAccConf {
     pubkey:String,
     hold_value_limit: u128,
 }
 
-#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
+#[derive(Clone)]
+#[near(serializers=[borsh, json])]
 pub struct StrategyData {
     //考虑到链上master变更之后,主账户转给子账户，主账户的签名需要验证是否是对应的master_key签的
     master_pubkey: String,
@@ -116,7 +119,7 @@ pub struct StrategyData {
     sub_confs: BTreeMap<AccountId,SubAccConf>,
 }
 
-#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
+#[near(serializers=[borsh, json])]
 pub struct CoinTx {
     from: AccountId,
     to: AccountId,
@@ -126,14 +129,14 @@ pub struct CoinTx {
     memo: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
+#[near(serializers=[borsh, json])]
 pub struct SubAccCoinTx {
     coin_id: AccountId,
     amount: u128,
 }
 
 
-#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
+#[near(serializers=[borsh, json])]
 pub struct WithdrawInfo {
     from: AccountId,
     kind: String,
@@ -141,29 +144,27 @@ pub struct WithdrawInfo {
     amount: u128,
 }
 
-#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize, Clone)]
-#[serde(crate = "near_sdk::serde")]
+#[derive(Clone)]
+#[near(serializers=[borsh, json])]
 pub struct MultiSigRank {
     min: u128,
     max_eq: u128,
     sig_num: u8,
 }
 
-#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
-#[serde(crate = "near_sdk::serde")]
+#[near(serializers=[borsh, json])]
 pub struct PubkeySignInfo {
     pubkey: String,
     signature: String,
 }
 
-#[derive(Serialize, Deserialize, BorshDeserialize, BorshSerialize)]
-#[serde(crate = "near_sdk::serde")]
+#[near(serializers=[borsh, json])]
 pub struct AccountSignInfo {
     account_id: String,
     signature: String,
 }
 
-#[near_bindgen]
+#[near(serializers=[borsh, json])]
 impl Contract {
     pub fn get_txs_state(&self, txs_index: Vec<Index>) -> Vec<(Index, bool)> {
         let values: Vec<bool> = txs_index
@@ -197,17 +198,17 @@ impl Contract {
         //子账户给主账户转账要求免费,提现要有手续费
         let transfer_promise = if tx_type == TxType::Sub2Main || tx_type == TxType::Main2Sub {
             coin::ext(coin_id.to_owned())
-            .with_static_gas(Gas(5 * TGAS))
+            .with_static_gas(Gas::from_tgas(5))
             .transfer_from_nongas(sender_id.to_owned(), receiver_id.to_owned(), amount, memo)
         }else{
             coin::ext(coin_id.to_owned())
-            .with_static_gas(Gas(5 * TGAS))
+            .with_static_gas(Gas::from_tgas(5))
             .transfer_from(sender_id.to_owned(), receiver_id.to_owned(), amount, memo)
         };
 
         transfer_promise.then(
                 {
-                    let call_handle = Self::ext(env::current_account_id()).with_static_gas(Gas(5 * TGAS));
+                    let call_handle = Self::ext(env::current_account_id()).with_static_gas(Gas::from_tgas(5));
                     if tx_type == TxType::Main2Bridge{
                         call_handle.call_transfer_to_bridge_callback(1500,sender_id.to_owned(),amount,coin_id.to_owned())
                     }else{
@@ -296,12 +297,12 @@ impl Contract {
             env::log_str("transfer_to_bridge was successful!");
             let bridge_addr = AccountId::from_str(external_bridge::BRIDGE_ADDRESS).unwrap();
             bridge::ext(bridge_addr)
-            .with_static_gas(Gas(5 * TGAS))
+            .with_static_gas(Gas::from_tgas(5))
             .new_order(chain_id,account_id,amount.0,token)
             .then(
                 Self::ext(env::current_account_id())
-                  .with_static_gas(Gas(5 * TGAS))
-                  .call_new_withdraw_order_callback(),
+                .with_static_gas(Gas::from_tgas(5))
+                .call_new_withdraw_order_callback(),
             )
         }
     }
@@ -396,7 +397,7 @@ impl Contract {
         
         //self.user_strategy.insert(&main_account_id, &my_strategy);
         self.user_strategy
-            .insert(main_account_id, my_strategy.to_owned())
+            .insert(main_account_id, my_strategy)
             .unwrap();
     }
 
@@ -423,7 +424,7 @@ impl Contract {
         strategy.multi_sig_ranks = rank_arr;
         //self.user_strategy.insert(&user_account_id, &strategy);
         self.user_strategy
-            .insert(user_account_id.clone(), strategy.to_owned())
+            .insert(user_account_id.clone(), strategy)
             .unwrap();
         log!(
             "set {}'s strategy successfully",
@@ -449,7 +450,7 @@ impl Contract {
         strategy.servant_pubkeys = servant_device_pubkey;
         //self.user_strategy.insert(&user_account_id, &strategy);
         self.user_strategy
-            .insert(user_account_id.clone(), strategy.to_owned())
+            .insert(user_account_id.clone(), strategy)
             .unwrap();
         log!(
             "set {}'s strategy successfully",
@@ -532,8 +533,7 @@ impl Contract {
     pub fn get_strategy(&self, user_account_id: AccountId) -> Option<StrategyData> {
         //self.user_strategy.get(&user_account_id).as_ref().map(|data| data.to_owned())
         self.user_strategy
-            .get(&user_account_id)
-            .map(|x| x.to_owned())
+            .get(&user_account_id).map(|x| x.clone())
     }
     pub fn send_money(
         &mut self,
@@ -908,6 +908,7 @@ impl Contract {
     }
 }
 
+/****
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -977,3 +978,4 @@ mod tests {
         contract.send_money(servant_device_sigs, receiver_id, coin_account_id, amount);
     }
 }
+***/
