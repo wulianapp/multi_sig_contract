@@ -23,8 +23,6 @@ use std::collections::BTreeMap;
 #[macro_use]
 extern crate near_sdk;
 
-
-
 type Index = u64;
 const COIN_CONTRACT_IDS:[&'static str; 6] = ["btc.node0","eth.node0","usdt.node0","usdc.node0","dw20.node0","cly.node0"];
 

@@ -16,6 +16,7 @@ use near_crypto::InMemorySigner;
 use near_primitives::types::AccountId;
 use lazy_static::lazy_static;
 use near_primitives::borsh::BorshSerialize;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -24,6 +25,12 @@ pub struct MultiSigRank {
     min: u128,
     max_eq: u128,
     sig_num: u8,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+pub struct SubAccConf {
+    pubkey:String,
+    hold_value_limit: u128,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -51,8 +58,8 @@ pub struct CoinTx {
 }
 
 lazy_static! {
-    static ref CHAIN_CLIENT: JsonRpcClient = JsonRpcClient::connect("http://123.56.252.201:8061");
-    static ref MULTI_SIG_CID: AccountId = AccountId::from_str("multi_sig4.node0").unwrap();
+    static ref CHAIN_CLIENT: JsonRpcClient = JsonRpcClient::connect("http://120.232.251.101:29162");
+    static ref MULTI_SIG_CID: AccountId = AccountId::from_str("test.multiwallet.chainless").unwrap();
     static ref DW20_CID: AccountId = AccountId::from_str("dw20.node0").unwrap();
 }
 
@@ -84,6 +91,7 @@ pub async fn gen_transaction(signer: &InMemorySigner, contract_addr: &str) -> Tr
     }
 }
 
+/*** 
 async fn get_balance(account: &AccountId) -> u128 {
     let request = methods::query::RpcQueryRequest {
         block_reference: BlockReference::Finality(Finality::Final),
@@ -104,6 +112,7 @@ async fn get_balance(account: &AccountId) -> u128 {
         unreachable!()
     }
 }
+**/
 
 
 fn servant_keys() -> Vec<String> {
@@ -140,25 +149,27 @@ fn dummy_ranks() -> Vec<MultiSigRank> {
 }
 
 
-async fn set_strategy(user_account_id: &AccountId,
-                      main_device_pubkey: String,
-                      servant_pubkey: Vec<String>,
+async fn set_strategy(
                       signer: InMemorySigner,
+                      master_pubkey: String,  
+                      user_account_id: &AccountId,
+                      servant_pubkeys: Vec<String>,
+                      sub_confs: BTreeMap<AccountId,SubAccConf>,
                       rank_arr: Vec<MultiSigRank>
 ) -> Result<String, String> {
-    let set_strategy_actions = vec![Action::FunctionCall(*Box::new(FunctionCallAction {
-        method_name: "set_strategy".to_string(),
+    let set_strategy_actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+        method_name: "set_strategy2".to_string(),
         args: json!({
+                "master_pubkey": master_pubkey,
                 "user_account_id": user_account_id,
-                "main_device_pubkey": main_device_pubkey,
-                "servant_device_pubkey": servant_pubkey,
-                "rank_arr": rank_arr,
-                //"loop_time": 2u32,
+                "servant_pubkeys": servant_pubkeys,
+                "sub_confs": sub_confs,
+                "rank_arr": rank_arr
             })
             .to_string()
             .into_bytes(),
         gas: 300000000000000, // 100 TeraGas
-        deposit: 0,
+        deposit: None,
     }))];
 
     let mut transaction = gen_transaction(&signer, &MULTI_SIG_CID.to_string()).await;
@@ -213,7 +224,7 @@ async fn send_money(
     coin_tx: CoinTx,
 ) -> Result<String, String>{
     //let CoinTx{from,to,coin_id,amount,memo} = coin_tx;
-    let set_strategy_actions = vec![Action::FunctionCall(*Box::new(FunctionCallAction {
+    let set_strategy_actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
         method_name: "send_money".to_string(),
         args: json!({
                 "servant_device_sigs": servant_device_sigs,
@@ -222,7 +233,7 @@ async fn send_money(
             .to_string()
             .into_bytes(),
         gas: 300000000000000, // 100 TeraGas
-        deposit: 0,
+        deposit: None,
     }))];
 
     let mut transaction = gen_transaction(&signer, &MULTI_SIG_CID.to_string()).await;
@@ -246,8 +257,8 @@ async fn send_money(
 
 fn get_pubkey(pri_key_str:&str) -> String{
     let secret_key = near_crypto::SecretKey::from_str(pri_key_str).unwrap();
-    let pubkey = secret_key.public_key().try_to_vec().unwrap();
-    pubkey.as_slice()[1..].to_vec().encode_hex()
+    let pubkey = secret_key.public_key().unwrap_as_ed25519().0.to_vec();
+    pubkey.encode_hex()
 }
 
 /***
@@ -305,20 +316,42 @@ fn gen_replace_action(){
 ***/
 #[tokio::main]
 async fn main() {
-    let pri_key = "ed25519:cM3cWYumPkSTn56ELfn2mTTYdf9xzJMJjLQnCFq8dgbJ3x97hw7ezkrcnbk4nedPLPMga3dCGZB51TxWaGuPtwE";
+    //eddy.chainless
+    let pri_key = "ed25519:YDqZJcyWYeWN3pw6JBLwZtpkjASs5Q9rYUj3tKQyU719SErbrE75rZiXiWL75MhkF67T9wQZDBQHtCZioTZg1Vz";
     let secret_key: SecretKey = pri_key.parse().unwrap();
     let secret_key_bytes = secret_key.unwrap_as_ed25519().0.as_slice();
     //6a7a4df96a60c225f25394fd0195eb938eb1162de944d2c331dccef324372f45
     let main_device_pubkey = get_pubkey(&pri_key);
-    let signer_account_id = AccountId::from_str(&main_device_pubkey).unwrap();
+    println!("main_device_pubkey_{}",main_device_pubkey);
+    let signer_account_id = AccountId::from_str("eddy.chainless").unwrap();
     let signer = near_crypto::InMemorySigner::from_secret_key(signer_account_id.to_owned(), secret_key);
-
-    let receiver_id = AccountId::from_str("test1").unwrap();
 
     let strategy_str = get_strategy(&signer_account_id).await;
     println!("strategy_str2 {:#?}", strategy_str);
+
+    /***
+     * 
+        signer: InMemorySigner,
+                      master_pubkey: String,  
+                      user_account_id: &AccountId,
+                      servant_pubkeys: Vec<String>,
+                      sub_confs: BTreeMap<AccountId,SubAccConf>,
+                      rank_arr: Vec<MultiSigRank>
+    */
+
+    let set_strategy_res = set_strategy(
+            signer,
+            main_device_pubkey,
+            &signer_account_id,
+            Default::default(),
+            Default::default(),
+            Default::default()
+        ).await.unwrap();
+        println!("set_strategy_res {:#?}", set_strategy_res);
+
     return;
 
+    /***
     let servant_pubkey = servant_keys().as_slice()[..3].iter().map(|x| {
         let secret_key = near_crypto::SecretKey::from_str(x).unwrap();
         let pubkey = secret_key.public_key().try_to_vec().unwrap();
@@ -369,4 +402,5 @@ async fn main() {
     ).collect();
     let send_money_txid = send_money(signer,sigs,coin_tx_info).await.unwrap();
     println!("send_money_txid {}", send_money_txid);
+    ***/
 }

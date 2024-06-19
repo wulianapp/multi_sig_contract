@@ -1,0 +1,12 @@
+[workspace]
+resolver = "2"
+members = [
+    "example/rs",
+    "near-primitives",
+    "near-jsonrpc-primitives",
+    "near-jsonrpc-client-rs"
+    ##"contract"
+]
+
+
+
