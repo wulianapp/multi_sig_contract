@@ -5,6 +5,9 @@ use hex::ToHex;
 use near_crypto::{SecretKey, Signature, Signer};
 use near_jsonrpc_client::methods;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_primitives::action::delegate::{DelegateAction, SignedDelegateAction};
+use near_primitives::action::Deposit;
+use near_primitives::signable_message::{SignableMessage, SignableMessageType};
 use near_primitives::transaction::{Action, FunctionCallAction, SignedTransaction, Transaction};
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
 use near_primitives::views::{FinalExecutionStatus, QueryRequest};
@@ -59,8 +62,36 @@ pub struct CoinTx {
 
 lazy_static! {
     static ref CHAIN_CLIENT: JsonRpcClient = JsonRpcClient::connect("http://120.232.251.101:29162");
+
+    static ref CHAIN_META_CLIENT: JsonRpcClient = JsonRpcClient::connect("http://120.232.251.101:29163/send_meta_tx");
+
+
     static ref MULTI_SIG_CID: AccountId = AccountId::from_str("test.multiwallet.chainless").unwrap();
     static ref DW20_CID: AccountId = AccountId::from_str("dw20.node0").unwrap();
+}
+const RELAYER_URL: &str =  "http://120.232.251.101:29163/send_meta_tx";
+
+pub fn get_signed_delegate_action(
+    unsigned_transaction: near_primitives::transaction::Transaction,
+    max_block_height: u64,
+) -> DelegateAction {
+    use near_primitives::signable_message::{SignableMessage, SignableMessageType};
+
+    let actions = unsigned_transaction
+        .actions
+        .into_iter()
+        .map(near_primitives::action::delegate::NonDelegateAction::try_from)
+        .collect::<Result<_, _>>()
+        .expect("Internal error: can not convert the action to non delegate action (delegate action can not be delegated again).");
+    let delegate_action = near_primitives::action::delegate::DelegateAction {
+        sender_id: unsigned_transaction.signer_id.clone(),
+        receiver_id: unsigned_transaction.receiver_id,
+        actions,
+        nonce: unsigned_transaction.nonce,
+        max_block_height,
+        public_key: unsigned_transaction.public_key,
+    };
+    delegate_action
 }
 
 pub async fn gen_transaction(signer: &InMemorySigner, contract_addr: &str) -> Transaction {
@@ -89,6 +120,50 @@ pub async fn gen_transaction(signer: &InMemorySigner, contract_addr: &str) -> Tr
         block_hash: access_key_query_response.block_hash,
         actions: vec![],
     }
+}
+
+
+pub async fn gen_meta_transaction(signer: &InMemorySigner, actions:Vec<Action>,receiver_id: AccountId) -> Result<SignedDelegateAction,String> {
+    let key_state = crate::CHAIN_CLIENT
+        .call(methods::query::RpcQueryRequest {
+            block_reference: BlockReference::latest(),
+            request: near_primitives::views::QueryRequest::ViewAccessKey {
+                account_id: signer.account_id.clone(),
+                public_key: signer.public_key.clone(),
+            },
+        })
+        .await
+        .unwrap();
+
+    let current_nonce = match key_state.kind {
+        QueryResponseKind::AccessKey(access_key) => access_key.nonce,
+        _ => Err("failed to extract current nonce").unwrap(),
+    };
+
+    let actions = actions
+        .into_iter()
+        .map(near_primitives::action::delegate::NonDelegateAction::try_from)
+        .collect::<Result<_, _>>()
+        .map_err(|_e| "Internal error: can not convert the action to non delegate action (delegate action can not be delegated again)".to_string())?;
+    
+    let delegate_action = DelegateAction {
+        sender_id: signer.account_id.clone(),
+        receiver_id,
+        actions,
+        nonce: current_nonce + 1,
+        max_block_height: key_state.block_height + 1000,
+        public_key: signer.public_key.clone(),
+    };
+
+    let signable = SignableMessage::new(&delegate_action, SignableMessageType::DelegateAction);
+    let signature = signable.sign(signer);
+
+    let meta_tx = SignedDelegateAction {
+        delegate_action,
+        signature,
+    };
+
+    Ok(meta_tx)
 }
 
 /*** 
@@ -191,6 +266,80 @@ async fn set_strategy(
     let tx_id = rep.transaction.hash.to_string();
     Ok(tx_id)
 }
+
+async fn set_strategy2(
+    signer: InMemorySigner,
+    master_pubkey: String,  
+    user_account_id: &AccountId,
+    servant_pubkeys: Vec<String>,
+    sub_confs: BTreeMap<AccountId,SubAccConf>,
+    rank_arr: Vec<MultiSigRank>
+) -> Result<SignedTransaction, String> {
+        let set_strategy_actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+        method_name: "set_strategy2".to_string(),
+        args: json!({
+            "master_pubkey": master_pubkey,
+            "user_account_id": user_account_id,
+            "servant_pubkeys": servant_pubkeys,
+            "sub_confs": sub_confs,
+            "rank_arr": rank_arr
+            })
+        .to_string()
+        .into_bytes(),
+        gas: 300000000000000, // 100 TeraGas
+        deposit: None,
+        }))];
+
+        let mut transaction = gen_transaction(&signer, &MULTI_SIG_CID.to_string()).await;
+        transaction.actions = set_strategy_actions;
+        let signature = signer.sign(transaction.get_hash_and_size().0.as_ref());
+
+
+        let tx = SignedTransaction::new(signature, transaction);
+        Ok(tx)
+}
+
+
+async fn set_strategy3(
+    signer: InMemorySigner,
+    master_pubkey: String,  
+    user_account_id: &AccountId,
+    servant_pubkeys: Vec<String>,
+    sub_confs: BTreeMap<AccountId,SubAccConf>,
+    rank_arr: Vec<MultiSigRank>
+) -> Result<String, String> {
+    let set_strategy_actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
+        method_name: "set_strategy2".to_string(),
+        args: json!({
+            "master_pubkey": master_pubkey,
+            "user_account_id": user_account_id,
+            "servant_pubkeys": servant_pubkeys,
+            "sub_confs": sub_confs,
+            "rank_arr": rank_arr
+            })
+        .to_string()
+        .into_bytes(),
+        gas: 300000000000000, // 100 TeraGas
+        deposit: Some(Deposit{ deposit: 0, symbol: None, fee: None }),
+    }))];
+
+    let meta_tx = gen_meta_transaction(&signer, set_strategy_actions,MULTI_SIG_CID.clone()).await?;
+    let meta_tx_json  = serde_json::to_string(&meta_tx).unwrap();
+
+    println!("meta_tx_json {}",meta_tx_json);
+
+    let res = reqwest::Client::new()
+                .post(RELAYER_URL)
+                .header("Content-Type", "application/json")
+                .body(meta_tx_json)
+                .send()
+                .await.unwrap()
+                .text().await.unwrap();
+    println!("res {}",res);
+    Ok(res)
+
+}
+
 
 async fn get_strategy(user_account_id: &AccountId) -> Option<StrategyData> {
     let request = methods::query::RpcQueryRequest {
@@ -339,7 +488,7 @@ async fn main() {
                       rank_arr: Vec<MultiSigRank>
     */
 
-    let set_strategy_res = set_strategy(
+    let call_res = set_strategy3(
             signer,
             main_device_pubkey,
             &signer_account_id,
@@ -347,7 +496,10 @@ async fn main() {
             Default::default(),
             Default::default()
         ).await.unwrap();
-        println!("set_strategy_res {:#?}", set_strategy_res);
+
+    println!("set_strategy_res {}", call_res);
+
+    //let  tmp1 =    DelegateAction::default();
 
     return;
 
