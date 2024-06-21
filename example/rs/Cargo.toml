@@ -15,7 +15,7 @@ near-chain-configs = "0.20.1"
 ##near-jsonrpc-primitives = "0.20.1"
 near-jsonrpc-primitives = {path = "../../near-jsonrpc-primitives"}
 near-jsonrpc-client = {path = "../../near-jsonrpc-client-rs"}
-
+multi_wallet_contract = {package = "contract", path = "../../contract"}
 
 hex = "0.4"
 serde_json = "1.0.108"

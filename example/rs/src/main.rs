@@ -5,6 +5,7 @@ use std::str::FromStr;
 use ed25519_dalek::Signer as DalekSigner;
 use hex::ToHex;
 use meta_tx::{meta_call, send_meta_tx};
+use multi_wallet_contract::{MtTransfer, MultiSigRank, PubkeySignInfo, StrategyData, SubAccConf};
 use near_crypto::{SecretKey, Signature, Signer};
 use near_jsonrpc_client::methods;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
@@ -13,7 +14,7 @@ use near_primitives::action::Deposit;
 use near_primitives::signable_message::{SignableMessage, SignableMessageType};
 use near_primitives::transaction::{Action, FunctionCallAction, SignedTransaction, Transaction};
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
-use near_primitives::views::{ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus, QueryRequest};
+use near_primitives::views::{ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus, QueryRequest, TokenBalanceList};
 use serde_json::json;
 use near_jsonrpc_client::{JsonRpcClient};
 use near_jsonrpc_primitives::types::transactions::TransactionInfo;
@@ -23,45 +24,8 @@ use near_primitives::types::AccountId;
 use lazy_static::lazy_static;
 use near_primitives::borsh::BorshSerialize;
 use std::collections::BTreeMap;
-
 use serde::{Deserialize, Serialize};
 
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct MultiSigRank {
-    min: u128,
-    max_eq: u128,
-    sig_num: u8,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-pub struct SubAccConf {
-    pubkey:String,
-    hold_value_limit: u128,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct StrategyData {
-    multi_sig_ranks: Vec<MultiSigRank>,
-    main_device_pubkey: String,
-    servant_device_pubkey: Vec<String>,
-}
-
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct SignInfo {
-    pubkey: String,
-    signature: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct CoinTx {
-    from: AccountId,
-    to: AccountId,
-    coin_id:AccountId,
-    amount:u128,
-    memo:Option<String>,
-    expire_at: u64,
-}
 
 lazy_static! {
     static ref CHAIN_CLIENT: JsonRpcClient = JsonRpcClient::connect("http://120.232.251.101:29162");
@@ -146,28 +110,22 @@ pub async fn gen_meta_transaction(signer: &InMemorySigner, actions:Vec<Action>,r
     Ok(meta_tx)
 }
 
-/*** 
-async fn get_balance(account: &AccountId) -> u128 {
+ 
+async fn get_balance(account: &AccountId,_symbol: &str) -> TokenBalanceList {
     let request = methods::query::RpcQueryRequest {
-        block_reference: BlockReference::Finality(Finality::Final),
-        request: QueryRequest::CallFunction {
-            account_id: (*DW20_CID).clone(),
-            method_name: "ft_balance_of".to_string(),
-            args: FunctionArgs::from(json!({
-                "account_id":account.to_string()
-            }).to_string().into_bytes()),
-        },
+        block_reference: BlockReference::Finality(Finality::None),
+        request: QueryRequest::ViewTokenBalanceList { 
+            account_id: account.to_owned()
+        } 
     };
     let rep = CHAIN_CLIENT.call(request).await.unwrap();
-
-    if let QueryResponseKind::CallResult(result) = rep.kind {
-        let amount_str: String = String::from_utf8(result.result).unwrap().split("\"").collect();
-        u128::from_str(&amount_str).unwrap()
+    println!("get_balance {:?}", rep);
+    if let QueryResponseKind::TokenBalanceList(list) = rep.kind {
+        list
     } else {
         unreachable!()
     }
 }
-**/
 
 
 fn servant_keys() -> Vec<String> {
@@ -187,7 +145,7 @@ fn dummy_ranks() -> Vec<MultiSigRank> {
     vec![
         MultiSigRank {
             min: 0,
-            max_eq: 100,
+            max_eq: 1000000000,
             sig_num: 1,
         },
         MultiSigRank {
@@ -203,52 +161,7 @@ fn dummy_ranks() -> Vec<MultiSigRank> {
     ]
 }
 
-
 async fn set_strategy(
-                      signer: InMemorySigner,
-                      master_pubkey: String,  
-                      user_account_id: &AccountId,
-                      servant_pubkeys: Vec<String>,
-                      sub_confs: BTreeMap<AccountId,SubAccConf>,
-                      rank_arr: Vec<MultiSigRank>
-) -> Result<String, String> {
-    let set_strategy_actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
-        method_name: "set_strategy2".to_string(),
-        args: json!({
-                "master_pubkey": master_pubkey,
-                "user_account_id": user_account_id,
-                "servant_pubkeys": servant_pubkeys,
-                "sub_confs": sub_confs,
-                "rank_arr": rank_arr
-            })
-            .to_string()
-            .into_bytes(),
-        gas: 300000000000000, // 100 TeraGas
-        deposit: None,
-    }))];
-
-    let mut transaction = gen_transaction(&signer, &MULTI_SIG_CID.to_string()).await;
-    transaction.actions = set_strategy_actions;
-    let signature = signer.sign(transaction.get_hash_and_size().0.as_ref());
-
-
-    let tx = SignedTransaction::new(signature, transaction);
-    let request = methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest {
-        signed_transaction: tx.clone(),
-    };
-
-    println!("call set strategy txid {}",&tx.get_hash().to_string());
-
-    let rep = CHAIN_CLIENT.call(request).await.unwrap();
-    if let FinalExecutionStatus::Failure(error) = rep.status {
-        Err(error.to_string())?;
-    }
-    let tx_id = rep.transaction.hash.to_string();
-    Ok(tx_id)
-}
-
-
-async fn set_strategy3(
     signer: InMemorySigner,
     master_pubkey: String,  
     user_account_id: &AccountId,
@@ -286,27 +199,30 @@ async fn get_strategy(user_account_id: &AccountId) -> Option<StrategyData> {
             }).to_string().into_bytes()),
         },
     };
-    let rep = CHAIN_CLIENT.call(request).await;
-    println!("0001_ {:?}",rep);
-    return None;
-    /***
+    let rep = CHAIN_CLIENT.call(request).await.unwrap();
+    println!("query_res1 {:?}", rep);
+
     if let QueryResponseKind::CallResult(result) = rep.kind {
         let amount_str: String = String::from_utf8(result.result).unwrap();
-        println!("strategy_str {}", amount_str);
-        Some(serde_json::from_str::<StrategyData>(&amount_str).unwrap())
+        println!("query_res1 {}", amount_str);
+        serde_json::from_str::<Option<StrategyData>>(&amount_str).unwrap()
     } else {
-        None
+        panic!("")
     }
-    */
 }
 
 
 async fn send_money(
     signer: InMemorySigner,
-    servant_device_sigs: Vec<SignInfo>,
-    coin_tx: CoinTx,
+    servant_device_sigs: Vec<PubkeySignInfo>,
+    coin_tx: MtTransfer,
 ) -> Result<String, String>{
-    //let CoinTx{from,to,coin_id,amount,memo} = coin_tx;
+    let MtTransfer{
+            transfer_mt,
+            fee_mt,
+            amount,
+            ..
+        } = coin_tx.clone();
     let set_strategy_actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
         method_name: "send_money".to_string(),
         args: json!({
@@ -316,26 +232,13 @@ async fn send_money(
             .to_string()
             .into_bytes(),
         gas: 300000000000000, // 100 TeraGas
-        deposit: None,
+        deposit: Some(Deposit { 
+                deposit: amount, 
+                symbol: Some(transfer_mt), 
+                fee:  Some(fee_mt)
+        }),
     }))];
-
-    let mut transaction = gen_transaction(&signer, &MULTI_SIG_CID.to_string()).await;
-    transaction.actions = set_strategy_actions;
-    let signature = signer.sign(transaction.get_hash_and_size().0.as_ref());
-
-    let tx = SignedTransaction::new(signature, transaction);
-    let request = methods::broadcast_tx_commit::RpcBroadcastTxCommitRequest {
-        signed_transaction: tx.clone(),
-    };
-
-    println!("call set strategy txid {}",&tx.get_hash().to_string());
-
-    let rep = CHAIN_CLIENT.call(request).await.unwrap();
-    if let FinalExecutionStatus::Failure(error) = rep.status {
-        Err(error.to_string())?;
-    }
-    let tx_id = rep.transaction.hash.to_string();
-    Ok(tx_id)
+    meta_call(&signer, set_strategy_actions, &MULTI_SIG_CID).await
 }
 
 fn get_pubkey(pri_key_str:&str) -> String{
@@ -407,95 +310,63 @@ async fn main() {
     let main_device_pubkey = get_pubkey(&pri_key);
     println!("main_device_pubkey_{}",main_device_pubkey);
     let signer_account_id = AccountId::from_str("eddy.chainless").unwrap();
+    let receiver_account_id = AccountId::from_str("test2.eddy.chainless").unwrap();
     let signer = near_crypto::InMemorySigner::from_secret_key(signer_account_id.to_owned(), secret_key);
 
     let strategy_str = get_strategy(&signer_account_id).await;
     println!("strategy_str2 {:#?}", strategy_str);
 
-    /***
-     * 
-        signer: InMemorySigner,
-                      master_pubkey: String,  
-                      user_account_id: &AccountId,
-                      servant_pubkeys: Vec<String>,
-                      sub_confs: BTreeMap<AccountId,SubAccConf>,
-                      rank_arr: Vec<MultiSigRank>
-    */
-
-    let call_res = set_strategy3(
-            signer,
+    let call_res = set_strategy(
+            signer.clone(),
             main_device_pubkey,
             &signer_account_id,
             Default::default(),
             Default::default(),
-            Default::default()
+            dummy_ranks()
         ).await.unwrap();
 
     println!("set_strategy_res {}", call_res);
 
+    let strategy_str = get_strategy(&signer_account_id).await;
+    println!("strategy_str2 {:#?}", strategy_str);
+
     //todo: 测试流程
     /***
-     0、构造从设备数据
+     0、构造从设备数据,在链上存在的
+     0.1、 clear_all test
      1、设置策略
      2、检查策略
      3、构造交易数据
      4、sendmoney
     */
 
-    //let  tmp1 = DelegateAction::default();
-
-    return;
-
-    /***
-    let servant_pubkey = servant_keys().as_slice()[..3].iter().map(|x| {
-        let secret_key = near_crypto::SecretKey::from_str(x).unwrap();
-        let pubkey = secret_key.public_key().try_to_vec().unwrap();
-        pubkey.as_slice()[1..].to_vec().encode_hex()
-    }).collect::<Vec<String>>();
-
-    println!("{:?}",servant_pubkey);
-
-    let ranks = dummy_ranks();
-
-    let balance = get_balance(&signer_account_id).await;
-    println!("account {}: balance {}", main_device_pubkey,balance);
+    let balance = get_balance(&signer_account_id,"").await;
+    println!("account {}: balance {:?}",signer_account_id,balance);
 
     let strategy_str = get_strategy(&signer_account_id).await;
     println!("strategy_str2 {:#?}", strategy_str);
-    //let set_strategy_res = set_strategy(&user_account_id,main_device_pubkey,servant_pubkey,signer,ranks).await.unwrap();
-    //println!("call set strategy txid {}",set_strategy_res);
-    //let strategy_str2 = get_strategy(&user_account_id).await;
-    //println!("strategy_str2 {:#?}", strategy_str2);
-    //send_money 1 dw20, 1 servant is enough
+
+    let sender_balances = get_balance(&signer_account_id,"USDT").await;
+    let receiver_balances = get_balance(&receiver_account_id,"USDT").await;
+    println!("sender_balances {:?},receiver_balances {:?}", sender_balances,receiver_balances);
 
     let transfer_amount = 1;
-    let coin_tx_info = CoinTx {
-        from: signer_account_id,
-        to: receiver_id,
-        coin_id: DW20_CID.to_owned(),
+    let coin_tx_info = MtTransfer {
+        from: signer_account_id.clone(),
+        to: receiver_account_id.clone(),
+        transfer_mt: "USDT".to_string(),
+        fee_mt: "USDT".to_string(),
         amount: transfer_amount,
         memo:None,
         expire_at: 1808570727000,
     };
-    let coin_tx_str = serde_json::to_string(&coin_tx_info).unwrap();
+    let serverns_sig = Default::default();
+    let send_money_txid = send_money(signer,serverns_sig,coin_tx_info).await.unwrap();
 
-
-
-
-    let sigs: Vec<SignInfo> = servant_keys().as_slice()[..1].iter().map(|x|
-        {
-            let prikey: SecretKey = x.parse().unwrap();
-            let prikey_byte = prikey.unwrap_as_ed25519().0.as_slice();
-            println!("prikey {}",hex::encode(prikey_byte));
-            let sig = SignInfo {
-                pubkey: get_pubkey(x),
-                signature: ed25519_sign_data(prikey_byte, &coin_tx_str),
-            };
-            println!("{:#?}",sig);
-            sig
-        }
-    ).collect();
-    let send_money_txid = send_money(signer,sigs,coin_tx_info).await.unwrap();
     println!("send_money_txid {}", send_money_txid);
-    ***/
+
+    let sender_balances = get_balance(&signer_account_id,"USDT").await;
+    let receiver_balances = get_balance(&receiver_account_id,"USDT").await;
+    println!("sender_balances {:?},receiver_balances {:?}", sender_balances,receiver_balances);
+
 }

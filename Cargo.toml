@@ -4,8 +4,8 @@ members = [
     "example/rs",
     "near-primitives",
     "near-jsonrpc-primitives",
-    "near-jsonrpc-client-rs"
-    ##"contract"
+    "near-jsonrpc-client-rs",
+    "contract"
 ]
 
 

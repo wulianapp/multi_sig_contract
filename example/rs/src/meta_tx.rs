@@ -24,6 +24,8 @@ use serde::{Deserialize, Serialize};
 
 const RELAYER_URL: &str =  "http://120.232.251.101:29163/send_meta_tx";
 
+//todo: 本地meta签
+
 #[derive(serde::Serialize, serde::Deserialize, PartialEq, Eq, Clone)]
 pub struct ExecuteMetTxOutcome {
     pub status: FinalExecutionStatus,
@@ -89,7 +91,7 @@ pub async fn send_meta_tx(delete_action: SignedDelegateAction) -> Result<String,
         .send()
         .await.unwrap()
         .text().await.unwrap();
-    println!("res_text {}",res_text);
+    //println!("res_text {}",res_text);
     let exe_outcome  =  serde_json::from_str::<ExecuteMetTxOutcome>(&res_text).unwrap();
     if let FinalExecutionStatus::Failure(error) = exe_outcome.status {
         Err(error.to_string())?;
