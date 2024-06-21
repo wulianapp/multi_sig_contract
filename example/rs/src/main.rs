@@ -146,17 +146,17 @@ fn dummy_ranks() -> Vec<MultiSigRank> {
         MultiSigRank {
             min: 0,
             max_eq: 1000000000,
+            sig_num: 0,
+        },
+        MultiSigRank {
+            min: 1000000000,
+            max_eq: 2000000000,
             sig_num: 1,
         },
         MultiSigRank {
-            min: 100,
-            max_eq: 10000,
+            min: 2000000000,
+            max_eq: 3000000000,
             sig_num: 2,
-        },
-        MultiSigRank {
-            min: 10000,
-            max_eq: 999999999999,
-            sig_num: 3,
         },
     ]
 }
@@ -170,7 +170,7 @@ async fn set_strategy(
     rank_arr: Vec<MultiSigRank>
 ) -> Result<String, String> {
     let set_strategy_actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
-        method_name: "set_strategy2".to_string(),
+        method_name: "set_strategy".to_string(),
         args: json!({
             "master_pubkey": master_pubkey,
             "user_account_id": user_account_id,
