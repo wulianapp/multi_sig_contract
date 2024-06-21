@@ -1,7 +1,10 @@
+pub mod meta_tx;
+
 use std::str::FromStr;
 //use ed25519_dalek::Signer;
 use ed25519_dalek::Signer as DalekSigner;
 use hex::ToHex;
+use meta_tx::{meta_call, send_meta_tx};
 use near_crypto::{SecretKey, Signature, Signer};
 use near_jsonrpc_client::methods;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
@@ -10,7 +13,7 @@ use near_primitives::action::Deposit;
 use near_primitives::signable_message::{SignableMessage, SignableMessageType};
 use near_primitives::transaction::{Action, FunctionCallAction, SignedTransaction, Transaction};
 use near_primitives::types::{BlockReference, Finality, FunctionArgs};
-use near_primitives::views::{FinalExecutionStatus, QueryRequest};
+use near_primitives::views::{ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus, QueryRequest};
 use serde_json::json;
 use near_jsonrpc_client::{JsonRpcClient};
 use near_jsonrpc_primitives::types::transactions::TransactionInfo;
@@ -70,29 +73,6 @@ lazy_static! {
     static ref DW20_CID: AccountId = AccountId::from_str("dw20.node0").unwrap();
 }
 const RELAYER_URL: &str =  "http://120.232.251.101:29163/send_meta_tx";
-
-pub fn get_signed_delegate_action(
-    unsigned_transaction: near_primitives::transaction::Transaction,
-    max_block_height: u64,
-) -> DelegateAction {
-    use near_primitives::signable_message::{SignableMessage, SignableMessageType};
-
-    let actions = unsigned_transaction
-        .actions
-        .into_iter()
-        .map(near_primitives::action::delegate::NonDelegateAction::try_from)
-        .collect::<Result<_, _>>()
-        .expect("Internal error: can not convert the action to non delegate action (delegate action can not be delegated again).");
-    let delegate_action = near_primitives::action::delegate::DelegateAction {
-        sender_id: unsigned_transaction.signer_id.clone(),
-        receiver_id: unsigned_transaction.receiver_id,
-        actions,
-        nonce: unsigned_transaction.nonce,
-        max_block_height,
-        public_key: unsigned_transaction.public_key,
-    };
-    delegate_action
-}
 
 pub async fn gen_transaction(signer: &InMemorySigner, contract_addr: &str) -> Transaction {
     println!("___{}__{}_", signer.account_id, signer.public_key);
@@ -267,38 +247,6 @@ async fn set_strategy(
     Ok(tx_id)
 }
 
-async fn set_strategy2(
-    signer: InMemorySigner,
-    master_pubkey: String,  
-    user_account_id: &AccountId,
-    servant_pubkeys: Vec<String>,
-    sub_confs: BTreeMap<AccountId,SubAccConf>,
-    rank_arr: Vec<MultiSigRank>
-) -> Result<SignedTransaction, String> {
-        let set_strategy_actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
-        method_name: "set_strategy2".to_string(),
-        args: json!({
-            "master_pubkey": master_pubkey,
-            "user_account_id": user_account_id,
-            "servant_pubkeys": servant_pubkeys,
-            "sub_confs": sub_confs,
-            "rank_arr": rank_arr
-            })
-        .to_string()
-        .into_bytes(),
-        gas: 300000000000000, // 100 TeraGas
-        deposit: None,
-        }))];
-
-        let mut transaction = gen_transaction(&signer, &MULTI_SIG_CID.to_string()).await;
-        transaction.actions = set_strategy_actions;
-        let signature = signer.sign(transaction.get_hash_and_size().0.as_ref());
-
-
-        let tx = SignedTransaction::new(signature, transaction);
-        Ok(tx)
-}
-
 
 async fn set_strategy3(
     signer: InMemorySigner,
@@ -320,24 +268,10 @@ async fn set_strategy3(
         .to_string()
         .into_bytes(),
         gas: 300000000000000, // 100 TeraGas
-        deposit: Some(Deposit{ deposit: 0, symbol: None, fee: None }),
+        deposit: None//Some(Deposit{ deposit: 0, symbol: None, fee: None }),
     }))];
 
-    let meta_tx = gen_meta_transaction(&signer, set_strategy_actions,MULTI_SIG_CID.clone()).await?;
-    let meta_tx_json  = serde_json::to_string(&meta_tx).unwrap();
-
-    println!("meta_tx_json {}",meta_tx_json);
-
-    let res = reqwest::Client::new()
-                .post(RELAYER_URL)
-                .header("Content-Type", "application/json")
-                .body(meta_tx_json)
-                .send()
-                .await.unwrap()
-                .text().await.unwrap();
-    println!("res {}",res);
-    Ok(res)
-
+    meta_call(&signer, set_strategy_actions, &MULTI_SIG_CID).await
 }
 
 
@@ -499,7 +433,16 @@ async fn main() {
 
     println!("set_strategy_res {}", call_res);
 
-    //let  tmp1 =    DelegateAction::default();
+    //todo: 测试流程
+    /***
+     0、构造从设备数据
+     1、设置策略
+     2、检查策略
+     3、构造交易数据
+     4、sendmoney
+    */
+
+    //let  tmp1 = DelegateAction::default();
 
     return;
 
