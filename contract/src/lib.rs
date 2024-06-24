@@ -111,13 +111,11 @@ impl Contract {
 
     pub fn set_strategy(
         &mut self,
-        user_account_id: AccountId,
         servant_pubkeys: Vec<String>,
         rank_arr: Vec<MultiSigRank>,        
     ) {
         //todo: span must be serial
-        //todo: must be called by owner
-        //let multi_sig_ranks = rank_arr.iter().map(|&x| x.into()).collect();
+        let user_account_id = env::predecessor_account_id();
         let multi_sig_ranks = rank_arr;
         let strategy = StrategyData {
             multi_sig_ranks,
@@ -134,12 +132,15 @@ impl Contract {
         self.user_strategy.clear();
     }
 
-    pub fn remove_account_strategy(&mut self, acc: AccountId) {
-        self.user_strategy.remove(&acc);
+    pub fn remove_account(&mut self) {
+        let user_account_id = env::predecessor_account_id();
+        self.user_strategy.remove(&user_account_id);
     }
 
     //变更策略
-    pub fn update_rank(&mut self, user_account_id: AccountId, rank_arr: Vec<MultiSigRank>) {
+    pub fn update_rank(&mut self, rank_arr: Vec<MultiSigRank>) {
+        let user_account_id = env::predecessor_account_id();
+
         let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
         //todo: 更多的校验
         if rank_arr.len() > strategy.servant_pubkeys.len() + 1{
@@ -147,19 +148,18 @@ impl Contract {
         }
         strategy.multi_sig_ranks = rank_arr;
         self.user_strategy
-            .insert(user_account_id.clone(), strategy)
-            .unwrap();
+            .insert(user_account_id.clone(), strategy);
         log!(
             "set {}'s strategy successfully",
             user_account_id.to_string()
         );
     }
 
-    pub fn update_servant_pubkey(
+    pub fn update_servant(
         &mut self,
-        user_account_id: AccountId,
         servant_device_pubkey: Vec<String>,
     ) {
+        let user_account_id = env::predecessor_account_id();
         let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
         let new_servant_num = servant_device_pubkey.len() as u8;
         if strategy.servant_pubkeys.len() as u8 != new_servant_num {
@@ -171,8 +171,7 @@ impl Contract {
         }
         strategy.servant_pubkeys = servant_device_pubkey;
         self.user_strategy
-            .insert(user_account_id.clone(), strategy.to_owned())
-            .unwrap();
+            .insert(user_account_id.clone(), strategy.to_owned());
         log!(
             "set {}'s strategy successfully",
             user_account_id.to_string()
@@ -183,7 +182,7 @@ impl Contract {
         &mut self,
         hold_limit: u128
     ) {
-        let subaccount = env::signer_account_id();
+        let subaccount = env::predecessor_account_id();
         if let Some(value) = self.sub_confs.get_mut(&subaccount) {
             *value = hold_limit;
             log!(
@@ -221,8 +220,8 @@ impl Contract {
             memo: _memo,
             expire_at,
         } = coin_tx;
-        let caller = env::predecessor_account_id();
 
+        let caller = env::predecessor_account_id();
         require!(caller.eq(&from), "from must be  equal caller");
 
         let check_inputs = || -> Result<(), String> {
