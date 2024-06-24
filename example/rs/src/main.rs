@@ -5,7 +5,7 @@ use std::str::FromStr;
 use ed25519_dalek::Signer as DalekSigner;
 use hex::ToHex;
 use meta_tx::{meta_call, send_meta_tx};
-use multi_wallet_contract::{MtTransfer, MultiSigRank, PubkeySignInfo, StrategyData, SubAccConf};
+use multi_wallet_contract::{MtTransfer, MultiSigRank, PubkeySignInfo, StrategyData};
 use near_crypto::{SecretKey, Signature, Signer};
 use near_jsonrpc_client::methods;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
@@ -166,7 +166,6 @@ async fn set_strategy(
     master_pubkey: String,  
     user_account_id: &AccountId,
     servant_pubkeys: Vec<String>,
-    sub_confs: BTreeMap<AccountId,SubAccConf>,
     rank_arr: Vec<MultiSigRank>
 ) -> Result<String, String> {
     let set_strategy_actions = vec![Action::FunctionCall(Box::new(FunctionCallAction {
@@ -175,7 +174,6 @@ async fn set_strategy(
             "master_pubkey": master_pubkey,
             "user_account_id": user_account_id,
             "servant_pubkeys": servant_pubkeys,
-            "sub_confs": sub_confs,
             "rank_arr": rank_arr
             })
         .to_string()
@@ -320,7 +318,6 @@ async fn main() {
             signer.clone(),
             main_device_pubkey,
             &signer_account_id,
-            Default::default(),
             Default::default(),
             dummy_ranks()
         ).await.unwrap();

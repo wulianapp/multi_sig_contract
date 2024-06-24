@@ -25,6 +25,7 @@ impl Default for Contract {
             Self {
                 owner: AccountId::from_str("node0").unwrap(),
                 user_strategy: HashMap::new(),
+                sub_confs: BTreeMap::new(),
             }
         }
 }
@@ -36,6 +37,7 @@ pub struct Contract {
     owner: AccountId,
     //user_strategy: LookupMap<AccountId, StrategyData>,
     user_strategy: HashMap<AccountId, StrategyData>,
+    sub_confs: BTreeMap<AccountId, u128>,
 }
 
 /// calculate transfer_value, get number of needing servant's sig
@@ -44,8 +46,7 @@ fn get_servant_need(
     coin_account_id: &str,
     amount: u128,
 ) -> Option<u8> {
-    //todo: get price by oracle
-    //let coin_price = get_coin_price(coin_account_id);
+    //todo: get price by env
     let coin_price = 1;
     let transfer_value = amount * coin_price;
     strategy
@@ -54,20 +55,20 @@ fn get_servant_need(
         .map(|rank| rank.sig_num)
 }
 
+/***
 #[derive(Clone,Debug)]
 #[near(serializers=[borsh, json])]
 pub struct SubAccConf {
     account_id: AccountId,
     hold_value_limit: u128,
 }
+**/
 
 #[derive(Clone,Debug)]
 #[near(serializers=[borsh, json])]
 pub struct StrategyData {
     multi_sig_ranks: Vec<MultiSigRank>,
-    //maybe  user_account_id unequal to main pub key
     servant_pubkeys: Vec<String>,
-    sub_confs: BTreeMap<AccountId,SubAccConf>,
 }
 
 #[derive(Clone)]
@@ -98,12 +99,6 @@ pub struct PubkeySignInfo {
 }
 
 #[near(serializers=[borsh, json])]
-pub struct AccountSignInfo {
-    account_id: String,
-    signature: String,
-}
-
-#[near(serializers=[borsh, json])]
 impl Contract {
     pub fn get_owner() {
         unimplemented!()
@@ -118,9 +113,7 @@ impl Contract {
         &mut self,
         user_account_id: AccountId,
         servant_pubkeys: Vec<String>,
-        sub_confs: BTreeMap<AccountId,SubAccConf>,
-        rank_arr: Vec<MultiSigRank>,
-        
+        rank_arr: Vec<MultiSigRank>,        
     ) {
         //todo: span must be serial
         //todo: must be called by owner
@@ -128,7 +121,6 @@ impl Contract {
         let multi_sig_ranks = rank_arr;
         let strategy = StrategyData {
             multi_sig_ranks,
-            sub_confs,
             servant_pubkeys,
         };
         self.user_strategy.insert(user_account_id.clone(), strategy);
@@ -136,34 +128,6 @@ impl Contract {
             "set {}'s strategy successfully",
             user_account_id.to_string()
         );
-    }
-
-    pub fn add_subaccounts(&mut self, main_account_id: AccountId, new_sub: HashMap<AccountId,SubAccConf>) {
-        //todo: call must be relayer
-        let my_strategy = self.user_strategy.get(&main_account_id);
-        require!(my_strategy.is_some(), "main_account_id isn't exsit");
-        let mut my_strategy = my_strategy.unwrap().to_owned();
-        my_strategy.sub_confs.extend(new_sub);
-        self.user_strategy.insert(main_account_id, my_strategy).unwrap();
-    }
-
-    //仅仅是合约解除绑定，但是链底层不删，上层检查余额是否为零
-    pub fn remove_subaccounts(&mut self, main_account_id: AccountId, accounts: Vec<AccountId>) {
-        //todo: call must be relayer
-        let my_strategy = self.user_strategy.get(&main_account_id);
-        require!(my_strategy.is_some(), "main_account_id isn't exsit");
-        let mut my_strategy = my_strategy.unwrap().to_owned();
-        
-        my_strategy.sub_confs = my_strategy
-            .sub_confs
-            .into_iter()
-            .filter(|item| !accounts.contains(&item.0))
-            .collect();
-        
-        //self.user_strategy.insert(&main_account_id, &my_strategy);
-        self.user_strategy
-            .insert(main_account_id, my_strategy)
-            .unwrap();
     }
 
     pub fn clear_all(&mut self) {
@@ -174,8 +138,7 @@ impl Contract {
         self.user_strategy.remove(&acc);
     }
 
-    //必须是设置安全问答之后才能变更策略
-    //cover origin
+    //变更策略
     pub fn update_rank(&mut self, user_account_id: AccountId, rank_arr: Vec<MultiSigRank>) {
         let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
         //todo: 更多的校验
@@ -183,7 +146,6 @@ impl Contract {
             require!(false, "rank size must be equal to servant size");
         }
         strategy.multi_sig_ranks = rank_arr;
-        //self.user_strategy.insert(&user_account_id, &strategy);
         self.user_strategy
             .insert(user_account_id.clone(), strategy)
             .unwrap();
@@ -217,27 +179,25 @@ impl Contract {
         );
     }
 
-    pub fn update_subaccount_hold_limit(
+    pub fn set_subaccount_hold_limit(
         &mut self,
-        user_account_id: AccountId,
-        subaccount: AccountId,
         hold_limit: u128
     ) {
-
-        if let Some(strategy) = self.user_strategy.get_mut(&user_account_id){
-            if let Some(sub_conf) = strategy.sub_confs.get_mut(&subaccount) {
-                sub_conf.hold_value_limit = hold_limit;
-            } else {
-                require!(false, "Not found subaccount");
-            }
-        }else{
-            require!(false, "Not found mainaccount");
+        let subaccount = env::signer_account_id();
+        if let Some(value) = self.sub_confs.get_mut(&subaccount) {
+            *value = hold_limit;
+            log!(
+                "set {}'s hold limit to {} successfully",
+                subaccount.to_string(),hold_limit
+            );
+        } else {
+            log!(
+                "insert {}'s hold limit to {} successfully",
+                subaccount,hold_limit
+            );
+            self.sub_confs.insert(subaccount,hold_limit);
         }
 
-        log!(
-            "set {}'s hold limit to {} successfully",
-            subaccount.to_string(),hold_limit
-        );
     }
     
 
@@ -256,9 +216,9 @@ impl Contract {
             from,
             to,
             transfer_mt,
-            fee_mt,
+            fee_mt: _fee_mt,
             amount,
-            memo,
+            memo: _memo,
             expire_at,
         } = coin_tx;
         let caller = env::predecessor_account_id();
