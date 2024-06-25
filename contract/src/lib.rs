@@ -29,12 +29,9 @@ impl Default for Contract {
     }
 }
 
-// Define the contract structure
-//#[near_bindgen]
 #[near(contract_state)]
 pub struct Contract {
     owner: AccountId,
-    //user_strategy: LookupMap<AccountId, StrategyData>,
     user_strategy: HashMap<AccountId, StrategyData>,
     sub_confs: BTreeMap<AccountId, u128>,
 }
@@ -74,7 +71,6 @@ pub struct MtTransfer {
     pub transfer_mt: String,
     pub fee_mt: String,
     pub amount: u128,
-    pub expire_at: u64,
     pub memo: Option<String>,
 }
 
@@ -94,15 +90,6 @@ pub struct PubkeySignInfo {
 
 #[near]
 impl Contract {
-    pub fn get_owner() {
-        unimplemented!()
-    }
-
-    #[private]
-    pub fn update_owner() {
-        unimplemented!()
-    }
-
     pub fn set_strategy(&mut self, servant_pubkeys: Vec<String>, rank_arr: Vec<MultiSigRank>) {
         //todo: span must be serial
         let user_account_id = env::predecessor_account_id();
@@ -116,10 +103,6 @@ impl Contract {
             "set {}'s strategy successfully",
             user_account_id.to_string()
         );
-    }
-
-    pub fn clear_all(&mut self) {
-        self.user_strategy.clear();
     }
 
     pub fn remove_account(&mut self) {
@@ -184,9 +167,9 @@ impl Contract {
     }
 
     pub fn get_strategy(&self, user_account_id: AccountId) -> Option<StrategyData> {
-        //self.user_strategy.get(&user_account_id).as_ref().map(|data| data.to_owned())
         self.user_strategy.get(&user_account_id).map(|x| x.clone())
     }
+
     pub fn send_money(
         &mut self,
         servant_device_sigs: Vec<PubkeySignInfo>,
@@ -200,7 +183,6 @@ impl Contract {
             fee_mt: _fee_mt,
             amount,
             memo: _memo,
-            expire_at,
         } = coin_tx;
 
         let caller = env::predecessor_account_id();
@@ -211,14 +193,6 @@ impl Contract {
                 "{} haven't register multi_sig account!",
                 caller.to_string()
             ))?;
-
-            let now = env::block_timestamp_ms();
-            if now > expire_at {
-                Err(format!(
-                    "signature have been expired: now {} and expire_at {}",
-                    now, expire_at
-                ))?
-            }
 
             let servant_need =
                 get_servant_need(&my_strategy.multi_sig_ranks, &transfer_mt, amount)?;
