@@ -66,7 +66,6 @@ pub struct StrategyData {
 #[near(serializers=[borsh, json])]
 //todo: get transfer_mt,fee_mt,amount from env
 pub struct MtTransfer {
-    pub from: AccountId,
     pub to: AccountId,
     pub transfer_mt: String,
     pub fee_mt: String,
@@ -178,7 +177,6 @@ impl Contract {
     ) -> Promise {
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
         let MtTransfer {
-            from,
             to,
             transfer_mt,
             fee_mt: _fee_mt,
@@ -187,7 +185,6 @@ impl Contract {
         } = coin_tx;
 
         let caller = env::predecessor_account_id();
-        require!(caller.eq(&from), "from must be  equal caller");
 
         let check_inputs = || -> Result<(), String> {
             let my_strategy = self.user_strategy.get(&caller).ok_or(format!(
