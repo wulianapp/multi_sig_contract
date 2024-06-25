@@ -90,6 +90,7 @@ pub struct PubkeySignInfo {
 
 #[near]
 impl Contract {
+    
     pub fn set_strategy(&mut self, servant_pubkeys: Vec<String>, rank_arr: Vec<MultiSigRank>) {
         //todo: span must be serial
         let user_account_id = env::predecessor_account_id();
@@ -170,7 +171,7 @@ impl Contract {
         self.user_strategy.get(&user_account_id).map(|x| x.clone())
     }
 
-    pub fn send_money(
+    pub fn send_mt(
         &mut self,
         servant_device_sigs: Vec<PubkeySignInfo>,
         coin_tx: MtTransfer,
