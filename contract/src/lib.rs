@@ -18,27 +18,28 @@ use uint::hex;
 #[macro_use]
 extern crate near_sdk;
 
-/*** \\\
-impl Default for Contract {
-    // The default trait with which to initialize the contract
-    fn default() -> Self {
-        Self {
-            amount_points: HashMap::new(),
-            salve_needs: HashMap::new(),
-            slaves: HashMap::new(),
-            sub_confs: BTreeMap::new(),
-        }
-    }
-}
-***/
-//todo: init
-#[derive(Clone)]
+#[derive(Clone,Default)]
 #[near(serializers=[borsh, json])]
-//todo: get transfer_mt,fee_mt,amount from env
 pub struct Conf {
-    rank_max_num: u8
+    rank_max_num: u8,
+    slave_max_num: u8
 }
 
+#[derive(Clone)]
+#[near(serializers=[borsh, json])]
+pub struct MtTransfer {
+    pub to: AccountId,
+    //todo: 直接从env拿
+    pub transfer_mt: String,
+}
+
+#[near(serializers=[borsh, json])]
+pub struct PubkeySignInfo {
+    pub pubkey: PublicKey,
+    pub signature: String,
+}
+
+type Strategy = (Vec<u128>,Vec<u8>,Vec<PublicKey>,u128);
 
 #[derive(Default)]
 #[near(contract_state)]
@@ -51,62 +52,35 @@ pub struct Contract {
 }
 
 /// calculate transfer_value, get number of needing slave's sig
-fn slave_need(
-    strategy: &Vec<MultiSigRank>,
+fn get_slave_needs(
+    amount_points: &Vec<u128>,
+    slave_needs: &Vec<u8>,
     symbol: &str,
     amount: u128,
 ) -> Result<u8, String> {
+    assert_eq!(amount_points.len(),slave_needs.len());
+
+    if amount_points.is_empty(){
+        return Ok(0);
+    }
+
+    if amount_points.len() == 1{
+        return Ok(slave_needs[0]);
+    }
+
     let (base_amount, quote_amount) =
         env::mt_price(symbol).ok_or("symbol not support".to_string())?;
     let transfer_value = amount * base_amount / quote_amount;
-    let mut need_num = strategy.len() as u8;
-    for rank in strategy {
-        if transfer_value >= rank.min && transfer_value < rank.max_eq {
-            need_num = rank.sig_num;
+
+    let mut need_num = 0;
+    for index in 0..amount_points.len() {
+        if transfer_value > amount_points[index] && transfer_value <= amount_points[index+1]{
+            need_num = slave_needs[index];
             break;
         }
     }
     Ok(need_num)
 }
-
-/*** 
-#[derive(Clone, Debug)]
-#[near(serializers=[borsh, json])]
-pub struct StrategyData {
-    multi_sig_ranks: Vec<MultiSigRank>,
-    slave_pubkeys: Vec<String>,
-}
-***/
-
-#[derive(Clone)]
-#[near(serializers=[borsh, json])]
-//todo: get transfer_mt,fee_mt,amount from env
-pub struct MtTransfer {
-    pub to: AccountId,
-    pub transfer_mt: String,
-    pub fee_mt: String,
-    pub amount: u128,
-    pub memo: Option<String>,
-}
-
-
-//todo: num+max改成两个数组
-//salve_pubkey改为slave
-#[derive(Clone, Debug)]
-#[near(serializers=[borsh, json])]
-pub struct MultiSigRank {
-    pub min: u128,
-    pub max_eq: u128,
-    pub sig_num: u8,
-}
-
-#[near(serializers=[borsh, json])]
-pub struct PubkeySignInfo {
-    pub pubkey: String,
-    pub signature: String,
-}
-
-type Strategy = (Vec<u128>,Vec<u8>,Vec<PublicKey>,u128);
 
 
 #[near]
@@ -209,22 +183,19 @@ impl Contract {
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
         let MtTransfer {
             to,
-            transfer_mt,
-            fee_mt: _fee_mt,
-            amount,
-            memo: _memo,
+            transfer_mt, 
         } = coin_tx;
 
         let caller = env::predecessor_account_id();
+        let amount = env::attached_deposit(&transfer_mt);
 
         let check_inputs = || -> Result<(), String> {
-            let my_strategy = self.get_strategy(&caller).ok_or(format!(
+            let (points,slave_needs,slaves,..) = self.get_strategy(caller.clone()).ok_or(format!(
                 "{} haven't register multi_sig account!",
                 caller.to_string()
             ))?;
 
-            let slave_need =
-                slave_need(&my_strategy.multi_sig_ranks, &transfer_mt, amount)?;
+            let slave_need = get_slave_needs(&points,&slave_needs,&transfer_mt,amount.as_yoctonear())?;
 
             if slave_device_sigs.len() < slave_need as usize {
                 Err(format!(
@@ -234,19 +205,17 @@ impl Contract {
             }
 
             for slave_device_sig in slave_device_sigs {
-                if !my_strategy
-                    .slave_pubkeys
-                    .contains(&slave_device_sig.pubkey)
+                if !slaves.contains(&slave_device_sig.pubkey)
                 {
                     Err(format!(
-                        "{} is not belong this multi_sig_account",
+                        "{:?} is not belong this multi_sig_account",
                         slave_device_sig.pubkey
                     ))?
                 }
 
                 //check slave's sig
-                let public_key_bytes: Vec<u8> = hex::decode(slave_device_sig.pubkey).unwrap();
-                let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
+                let public_key_bytes = slave_device_sig.pubkey.as_bytes();
+                let public_key = ed25519_dalek::PublicKey::from_bytes(public_key_bytes).unwrap();
                 let signature =
                     ed25519_dalek::Signature::from_str(&slave_device_sig.signature).unwrap();
                 if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
@@ -259,9 +228,9 @@ impl Contract {
         if let Err(error) = check_inputs() {
             require!(false, error)
         }
-
+        
         //合约在白名单不扣钱,fee_mt是什么无所谓
         let fee_mt = "USDT".to_string();
-        Promise::new(to).transfer(transfer_mt, NearToken::from_yoctonear(amount), fee_mt)
+        Promise::new(to).transfer(transfer_mt, amount, fee_mt)
     }
 }
