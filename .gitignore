@@ -6,3 +6,5 @@ package-lock.json
 *nohup*
 **out
 *.txt
+*tmp*
+.DS_Store

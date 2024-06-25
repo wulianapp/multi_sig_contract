@@ -18,7 +18,7 @@ use uint::hex;
 #[macro_use]
 extern crate near_sdk;
 
-/*** 
+/*** \\\
 impl Default for Contract {
     // The default trait with which to initialize the contract
     fn default() -> Self {
@@ -31,6 +31,15 @@ impl Default for Contract {
     }
 }
 ***/
+//todo: init
+#[derive(Clone)]
+#[near(serializers=[borsh, json])]
+//todo: get transfer_mt,fee_mt,amount from env
+pub struct Conf {
+    rank_max_num: u8
+}
+
+
 #[derive(Default)]
 #[near(contract_state)]
 pub struct Contract {
@@ -38,6 +47,7 @@ pub struct Contract {
     slave_needs: HashMap<AccountId, Vec<u8>>,
     slaves: HashMap<AccountId, Vec<PublicKey>>,
     sub_confs: BTreeMap<AccountId, u128>,
+    config: Conf
 }
 
 /// calculate transfer_value, get number of needing slave's sig
@@ -96,16 +106,27 @@ pub struct PubkeySignInfo {
     pub signature: String,
 }
 
+type Strategy = (Vec<u128>,Vec<u8>,Vec<PublicKey>,u128);
+
 
 #[near]
 impl Contract {
 
-    // todo: 增加全局配置，设置可设置的梯度数量
+    // 设置可设置的梯度数量
+    pub fn set_rank_max(&mut self) {
+        let user_account_id = env::predecessor_account_id();
+        self.amount_points.remove(&user_account_id);
+        self.slave_needs.remove(&user_account_id);
+        self.slaves.remove(&user_account_id);
+        self.sub_confs.remove(&user_account_id);
+
+    }
     
-    pub fn set_strategy(&mut self, slaves: Vec<PublicKey>, amount_points:Vec<u128>,slave_needs: Vec<u8>) {
+    pub fn set_strategy(&mut self, slaves: Vec<PublicKey>, amount_points:Vec<u128>,slave_needs: Vec<u8>,subaccount_hold_limit:u128) {
         let user_account_id = env::predecessor_account_id();
         self.set_slaves(slaves);
         self.set_rank(amount_points, slave_needs);
+        self.set_subaccount_hold_limit(subaccount_hold_limit);
 
         log!(
             "set {}'s strategy successfully",
@@ -169,7 +190,7 @@ impl Contract {
         }
     }
 
-    pub fn get_strategy(&self, user_account_id: AccountId) -> Option<(Vec<u128>,Vec<u8>,Vec<PublicKey>,u128)> {
+    pub fn get_strategy(&self, user_account_id: AccountId) -> Option<Strategy> {
         let amount_points =  self.amount_points.get(&user_account_id).map(|x| x.clone());
         let slave_needs = self.slave_needs.get(&user_account_id).map(|x| x.clone());
         let slaves = self.slaves.get(&user_account_id).map(|x| x.clone());
@@ -197,7 +218,7 @@ impl Contract {
         let caller = env::predecessor_account_id();
 
         let check_inputs = || -> Result<(), String> {
-            let my_strategy = self.user_strategy.get(&caller).ok_or(format!(
+            let my_strategy = self.get_strategy(&caller).ok_or(format!(
                 "{} haven't register multi_sig account!",
                 caller.to_string()
             ))?;

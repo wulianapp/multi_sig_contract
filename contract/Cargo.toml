@@ -26,5 +26,5 @@ panic = "abort"
 overflow-checks = true
 
 ##release when build
-##[workspace]
-##members = []
+[workspace]
+members = []
