@@ -6,6 +6,7 @@ use near_sdk::{
     env, log, near_bindgen, require, serde_json, AccountId, Gas, Promise, PromiseError,
 };
 use std::cmp::max;
+use std::collections::BTreeMap;
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fmt::format;
@@ -13,21 +14,19 @@ use std::ops::Deref;
 use std::str::FromStr;
 use std::sync::mpsc::Receiver;
 use uint::hex;
-use std::collections::BTreeMap;
 
 #[macro_use]
 extern crate near_sdk;
 
-
 impl Default for Contract {
-        // The default trait with which to initialize the contract
-        fn default() -> Self {
-            Self {
-                owner: AccountId::from_str("node0").unwrap(),
-                user_strategy: HashMap::new(),
-                sub_confs: BTreeMap::new(),
-            }
+    // The default trait with which to initialize the contract
+    fn default() -> Self {
+        Self {
+            owner: AccountId::from_str("node0").unwrap(),
+            user_strategy: HashMap::new(),
+            sub_confs: BTreeMap::new(),
         }
+    }
 }
 
 // Define the contract structure
@@ -45,8 +44,9 @@ fn get_servant_need(
     strategy: &Vec<MultiSigRank>,
     symbol: &str,
     amount: u128,
-) -> Result<u8,String> {
-    let (base_amount,quote_amount) = env::mt_price(symbol).ok_or("symbol not support".to_string())?;
+) -> Result<u8, String> {
+    let (base_amount, quote_amount) =
+        env::mt_price(symbol).ok_or("symbol not support".to_string())?;
     let transfer_value = amount * base_amount / quote_amount;
     let mut need_num = strategy.len() as u8;
     for rank in strategy {
@@ -58,7 +58,7 @@ fn get_servant_need(
     Ok(need_num)
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 #[near(serializers=[borsh, json])]
 pub struct StrategyData {
     multi_sig_ranks: Vec<MultiSigRank>,
@@ -78,7 +78,7 @@ pub struct MtTransfer {
     pub memo: Option<String>,
 }
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 #[near(serializers=[borsh, json])]
 pub struct MultiSigRank {
     pub min: u128,
@@ -103,11 +103,7 @@ impl Contract {
         unimplemented!()
     }
 
-    pub fn set_strategy(
-        &mut self,
-        servant_pubkeys: Vec<String>,
-        rank_arr: Vec<MultiSigRank>,        
-    ) {
+    pub fn set_strategy(&mut self, servant_pubkeys: Vec<String>, rank_arr: Vec<MultiSigRank>) {
         //todo: span must be serial
         let user_account_id = env::predecessor_account_id();
         let multi_sig_ranks = rank_arr;
@@ -137,22 +133,18 @@ impl Contract {
 
         let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
         //todo: 更多的校验
-        if rank_arr.len() > strategy.servant_pubkeys.len() + 1{
+        if rank_arr.len() > strategy.servant_pubkeys.len() + 1 {
             require!(false, "rank size must be equal to servant size");
         }
         strategy.multi_sig_ranks = rank_arr;
-        self.user_strategy
-            .insert(user_account_id.clone(), strategy);
+        self.user_strategy.insert(user_account_id.clone(), strategy);
         log!(
             "set {}'s strategy successfully",
             user_account_id.to_string()
         );
     }
 
-    pub fn update_servant(
-        &mut self,
-        servant_device_pubkey: Vec<String>,
-    ) {
+    pub fn update_servant(&mut self, servant_device_pubkey: Vec<String>) {
         let user_account_id = env::predecessor_account_id();
         let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
         let new_servant_num = servant_device_pubkey.len() as u8;
@@ -172,32 +164,28 @@ impl Contract {
         );
     }
 
-    pub fn set_subaccount_hold_limit(
-        &mut self,
-        hold_limit: u128
-    ) {
+    pub fn set_subaccount_hold_limit(&mut self, hold_limit: u128) {
         let subaccount = env::predecessor_account_id();
         if let Some(value) = self.sub_confs.get_mut(&subaccount) {
             *value = hold_limit;
             log!(
                 "set {}'s hold limit to {} successfully",
-                subaccount.to_string(),hold_limit
+                subaccount.to_string(),
+                hold_limit
             );
         } else {
             log!(
                 "insert {}'s hold limit to {} successfully",
-                subaccount,hold_limit
+                subaccount,
+                hold_limit
             );
-            self.sub_confs.insert(subaccount,hold_limit);
+            self.sub_confs.insert(subaccount, hold_limit);
         }
-
     }
-    
 
     pub fn get_strategy(&self, user_account_id: AccountId) -> Option<StrategyData> {
         //self.user_strategy.get(&user_account_id).as_ref().map(|data| data.to_owned())
-        self.user_strategy
-            .get(&user_account_id).map(|x| x.clone())
+        self.user_strategy.get(&user_account_id).map(|x| x.clone())
     }
     pub fn send_money(
         &mut self,
@@ -233,8 +221,7 @@ impl Contract {
             }
 
             let servant_need =
-                get_servant_need(&my_strategy.multi_sig_ranks, &transfer_mt, amount)
-                .unwrap_or(my_strategy.servant_pubkeys.len() as u8);
+                get_servant_need(&my_strategy.multi_sig_ranks, &transfer_mt, amount)?;
 
             if servant_device_sigs.len() < servant_need as usize {
                 Err(format!(
@@ -272,6 +259,6 @@ impl Contract {
 
         //合约在白名单不扣钱,fee_mt是什么无所谓
         let fee_mt = "USDT".to_string();
-        Promise::new(to).transfer(transfer_mt,NearToken::from_yoctonear(amount),fee_mt)
+        Promise::new(to).transfer(transfer_mt, NearToken::from_yoctonear(amount), fee_mt)
     }
 }
