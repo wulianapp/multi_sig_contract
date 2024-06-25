@@ -43,26 +43,20 @@ pub struct Contract {
 /// calculate transfer_value, get number of needing servant's sig
 fn get_servant_need(
     strategy: &Vec<MultiSigRank>,
-    coin_account_id: &str,
+    symbol: &str,
     amount: u128,
-) -> Option<u8> {
-    //todo: get price by env
-    let coin_price = 1;
-    let transfer_value = amount * coin_price;
-    strategy
-        .iter()
-        .find(|&rank| transfer_value >= rank.min && transfer_value < rank.max_eq)
-        .map(|rank| rank.sig_num)
+) -> Result<u8,String> {
+    let (base_amount,quote_amount) = env::mt_price(symbol).ok_or("symbol not support".to_string())?;
+    let transfer_value = amount * base_amount / quote_amount;
+    let mut need_num = strategy.len() as u8;
+    for rank in strategy {
+        if transfer_value >= rank.min && transfer_value < rank.max_eq {
+            need_num = rank.sig_num;
+            break;
+        }
+    }
+    Ok(need_num)
 }
-
-/***
-#[derive(Clone,Debug)]
-#[near(serializers=[borsh, json])]
-pub struct SubAccConf {
-    account_id: AccountId,
-    hold_value_limit: u128,
-}
-**/
 
 #[derive(Clone,Debug)]
 #[near(serializers=[borsh, json])]
@@ -98,7 +92,7 @@ pub struct PubkeySignInfo {
     pub signature: String,
 }
 
-#[near(serializers=[borsh, json])]
+#[near]
 impl Contract {
     pub fn get_owner() {
         unimplemented!()
