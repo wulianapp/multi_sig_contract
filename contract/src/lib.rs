@@ -1,7 +1,7 @@
 use ed25519_dalek::Verifier;
 use near_sdk::json_types::U128;
 use near_sdk::serde::{Deserialize, Serialize};
-use near_sdk::NearToken;
+use near_sdk::{NearToken, PublicKey};
 use near_sdk::{
     env, log, near_bindgen, require, serde_json, AccountId, Gas, Promise, PromiseError,
 };
@@ -18,26 +18,30 @@ use uint::hex;
 #[macro_use]
 extern crate near_sdk;
 
+/*** 
 impl Default for Contract {
     // The default trait with which to initialize the contract
     fn default() -> Self {
         Self {
-            owner: AccountId::from_str("node0").unwrap(),
-            user_strategy: HashMap::new(),
+            amount_points: HashMap::new(),
+            salve_needs: HashMap::new(),
+            slaves: HashMap::new(),
             sub_confs: BTreeMap::new(),
         }
     }
 }
-
+***/
+#[derive(Default)]
 #[near(contract_state)]
 pub struct Contract {
-    owner: AccountId,
-    user_strategy: HashMap<AccountId, StrategyData>,
+    amount_points: HashMap<AccountId, Vec<u128>>,
+    slave_needs: HashMap<AccountId, Vec<u8>>,
+    slaves: HashMap<AccountId, Vec<PublicKey>>,
     sub_confs: BTreeMap<AccountId, u128>,
 }
 
 /// calculate transfer_value, get number of needing slave's sig
-fn get_slave_need(
+fn slave_need(
     strategy: &Vec<MultiSigRank>,
     symbol: &str,
     amount: u128,
@@ -55,12 +59,14 @@ fn get_slave_need(
     Ok(need_num)
 }
 
+/*** 
 #[derive(Clone, Debug)]
 #[near(serializers=[borsh, json])]
 pub struct StrategyData {
     multi_sig_ranks: Vec<MultiSigRank>,
     slave_pubkeys: Vec<String>,
 }
+***/
 
 #[derive(Clone)]
 #[near(serializers=[borsh, json])]
@@ -73,6 +79,9 @@ pub struct MtTransfer {
     pub memo: Option<String>,
 }
 
+
+//todo: num+max改成两个数组
+//salve_pubkey改为slave
 #[derive(Clone, Debug)]
 #[near(serializers=[borsh, json])]
 pub struct MultiSigRank {
@@ -87,18 +96,17 @@ pub struct PubkeySignInfo {
     pub signature: String,
 }
 
+
 #[near]
 impl Contract {
 
-    pub fn set_strategy(&mut self, slave_pubkeys: Vec<String>, rank_arr: Vec<MultiSigRank>) {
-        //todo: span must be serial
+    // todo: 增加全局配置，设置可设置的梯度数量
+    
+    pub fn set_strategy(&mut self, slaves: Vec<PublicKey>, amount_points:Vec<u128>,slave_needs: Vec<u8>) {
         let user_account_id = env::predecessor_account_id();
-        let multi_sig_ranks = rank_arr;
-        let strategy = StrategyData {
-            multi_sig_ranks,
-            slave_pubkeys,
-        };
-        self.user_strategy.insert(user_account_id.clone(), strategy);
+        self.set_slaves(slaves);
+        self.set_rank(amount_points, slave_needs);
+
         log!(
             "set {}'s strategy successfully",
             user_account_id.to_string()
@@ -107,42 +115,37 @@ impl Contract {
 
     pub fn remove_account(&mut self) {
         let user_account_id = env::predecessor_account_id();
-        self.user_strategy.remove(&user_account_id);
+        self.amount_points.remove(&user_account_id);
+        self.slave_needs.remove(&user_account_id);
+        self.slaves.remove(&user_account_id);
+        self.sub_confs.remove(&user_account_id);
+
     }
 
-    //变更策略
-    pub fn update_rank(&mut self, rank_arr: Vec<MultiSigRank>) {
+    pub fn set_rank(&mut self, amount_points:Vec<u128>,slave_needs: Vec<u8>) {
         let user_account_id = env::predecessor_account_id();
 
-        let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
-        //todo: 更多的校验
-        if rank_arr.len() > strategy.slave_pubkeys.len() + 1 {
-            require!(false, "rank size must be equal to slave size");
-        }
-        strategy.multi_sig_ranks = rank_arr;
-        self.user_strategy.insert(user_account_id.clone(), strategy);
+        //todo: 检查amount_points从小到大，且和salve_needs保持数量一致,salve_needs可以自由
+        require!(amount_points.len() == slave_needs.len(),"amount_points size not equal salves");
+
+        self.amount_points.insert(user_account_id.clone(), amount_points);
+        self.slave_needs.insert(user_account_id.clone(), slave_needs);
+
         log!(
-            "set {}'s strategy successfully",
+            "set {}'s rank successfully",
             user_account_id.to_string()
         );
     }
 
-    pub fn update_slave(&mut self, slave_device_pubkey: Vec<String>) {
+    pub fn set_slaves(&mut self, slaves: Vec<PublicKey>) {
         let user_account_id = env::predecessor_account_id();
-        let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
-        let new_slave_num = slave_device_pubkey.len() as u8;
-        if strategy.slave_pubkeys.len() as u8 != new_slave_num {
-            strategy.multi_sig_ranks = vec![MultiSigRank {
-                min: 0u128,
-                max_eq: u128::MAX,
-                sig_num: new_slave_num,
-            }];
-        }
-        strategy.slave_pubkeys = slave_device_pubkey;
-        self.user_strategy
-            .insert(user_account_id.clone(), strategy.to_owned());
+        let _salve_needs = self.slave_needs.get(&user_account_id).unwrap().to_owned();
+        let _amount_points = self.amount_points.get(&user_account_id).unwrap().to_owned();
+
+        //todo: 减少设备后和当前策略有冲突的话直接报错   
+        self.slaves.insert(user_account_id.clone(), slaves);
         log!(
-            "set {}'s strategy successfully",
+            "set {}'s slaves successfully",
             user_account_id.to_string()
         );
     }
@@ -166,8 +169,15 @@ impl Contract {
         }
     }
 
-    pub fn get_strategy(&self, user_account_id: AccountId) -> Option<StrategyData> {
-        self.user_strategy.get(&user_account_id).map(|x| x.clone())
+    pub fn get_strategy(&self, user_account_id: AccountId) -> Option<(Vec<u128>,Vec<u8>,Vec<PublicKey>,u128)> {
+        let amount_points =  self.amount_points.get(&user_account_id).map(|x| x.clone());
+        let slave_needs = self.slave_needs.get(&user_account_id).map(|x| x.clone());
+        let slaves = self.slaves.get(&user_account_id).map(|x| x.clone());
+        let sub_confs = self.sub_confs.get(&user_account_id).map(|x| x.clone());
+        match (amount_points,slave_needs,slaves,sub_confs) {
+            (Some(points),Some(needs),Some(keys),Some(limit)) => Some((points,needs,keys,limit)),
+            _ => None
+        }
     }
 
     pub fn send_mt(
@@ -193,7 +203,7 @@ impl Contract {
             ))?;
 
             let slave_need =
-                get_slave_need(&my_strategy.multi_sig_ranks, &transfer_mt, amount)?;
+                slave_need(&my_strategy.multi_sig_ranks, &transfer_mt, amount)?;
 
             if slave_device_sigs.len() < slave_need as usize {
                 Err(format!(
