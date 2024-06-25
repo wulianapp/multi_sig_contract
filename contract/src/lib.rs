@@ -36,8 +36,8 @@ pub struct Contract {
     sub_confs: BTreeMap<AccountId, u128>,
 }
 
-/// calculate transfer_value, get number of needing servant's sig
-fn get_servant_need(
+/// calculate transfer_value, get number of needing slave's sig
+fn get_slave_need(
     strategy: &Vec<MultiSigRank>,
     symbol: &str,
     amount: u128,
@@ -59,7 +59,7 @@ fn get_servant_need(
 #[near(serializers=[borsh, json])]
 pub struct StrategyData {
     multi_sig_ranks: Vec<MultiSigRank>,
-    servant_pubkeys: Vec<String>,
+    slave_pubkeys: Vec<String>,
 }
 
 #[derive(Clone)]
@@ -90,14 +90,14 @@ pub struct PubkeySignInfo {
 
 #[near]
 impl Contract {
-    
-    pub fn set_strategy(&mut self, servant_pubkeys: Vec<String>, rank_arr: Vec<MultiSigRank>) {
+
+    pub fn set_strategy(&mut self, slave_pubkeys: Vec<String>, rank_arr: Vec<MultiSigRank>) {
         //todo: span must be serial
         let user_account_id = env::predecessor_account_id();
         let multi_sig_ranks = rank_arr;
         let strategy = StrategyData {
             multi_sig_ranks,
-            servant_pubkeys,
+            slave_pubkeys,
         };
         self.user_strategy.insert(user_account_id.clone(), strategy);
         log!(
@@ -117,8 +117,8 @@ impl Contract {
 
         let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
         //todo: 更多的校验
-        if rank_arr.len() > strategy.servant_pubkeys.len() + 1 {
-            require!(false, "rank size must be equal to servant size");
+        if rank_arr.len() > strategy.slave_pubkeys.len() + 1 {
+            require!(false, "rank size must be equal to slave size");
         }
         strategy.multi_sig_ranks = rank_arr;
         self.user_strategy.insert(user_account_id.clone(), strategy);
@@ -128,18 +128,18 @@ impl Contract {
         );
     }
 
-    pub fn update_servant(&mut self, servant_device_pubkey: Vec<String>) {
+    pub fn update_slave(&mut self, slave_device_pubkey: Vec<String>) {
         let user_account_id = env::predecessor_account_id();
         let mut strategy = self.user_strategy.get(&user_account_id).unwrap().to_owned();
-        let new_servant_num = servant_device_pubkey.len() as u8;
-        if strategy.servant_pubkeys.len() as u8 != new_servant_num {
+        let new_slave_num = slave_device_pubkey.len() as u8;
+        if strategy.slave_pubkeys.len() as u8 != new_slave_num {
             strategy.multi_sig_ranks = vec![MultiSigRank {
                 min: 0u128,
                 max_eq: u128::MAX,
-                sig_num: new_servant_num,
+                sig_num: new_slave_num,
             }];
         }
-        strategy.servant_pubkeys = servant_device_pubkey;
+        strategy.slave_pubkeys = slave_device_pubkey;
         self.user_strategy
             .insert(user_account_id.clone(), strategy.to_owned());
         log!(
@@ -173,7 +173,7 @@ impl Contract {
 
     pub fn send_mt(
         &mut self,
-        servant_device_sigs: Vec<PubkeySignInfo>,
+        slave_device_sigs: Vec<PubkeySignInfo>,
         coin_tx: MtTransfer,
     ) -> Promise {
         let coin_tx_str = serde_json::to_string(&coin_tx).unwrap();
@@ -195,32 +195,32 @@ impl Contract {
                 caller.to_string()
             ))?;
 
-            let servant_need =
-                get_servant_need(&my_strategy.multi_sig_ranks, &transfer_mt, amount)?;
+            let slave_need =
+                get_slave_need(&my_strategy.multi_sig_ranks, &transfer_mt, amount)?;
 
-            if servant_device_sigs.len() < servant_need as usize {
+            if slave_device_sigs.len() < slave_need as usize {
                 Err(format!(
-                    "servant device sigs is insufficient,  need {} at least",
-                    servant_need
+                    "slave device sigs is insufficient,  need {} at least",
+                    slave_need
                 ))?
             }
 
-            for servant_device_sig in servant_device_sigs {
+            for slave_device_sig in slave_device_sigs {
                 if !my_strategy
-                    .servant_pubkeys
-                    .contains(&servant_device_sig.pubkey)
+                    .slave_pubkeys
+                    .contains(&slave_device_sig.pubkey)
                 {
                     Err(format!(
                         "{} is not belong this multi_sig_account",
-                        servant_device_sig.pubkey
+                        slave_device_sig.pubkey
                     ))?
                 }
 
-                //check servant's sig
-                let public_key_bytes: Vec<u8> = hex::decode(servant_device_sig.pubkey).unwrap();
+                //check slave's sig
+                let public_key_bytes: Vec<u8> = hex::decode(slave_device_sig.pubkey).unwrap();
                 let public_key = ed25519_dalek::PublicKey::from_bytes(&public_key_bytes).unwrap();
                 let signature =
-                    ed25519_dalek::Signature::from_str(&servant_device_sig.signature).unwrap();
+                    ed25519_dalek::Signature::from_str(&slave_device_sig.signature).unwrap();
                 if let Err(error) = public_key.verify(coin_tx_str.as_bytes(), &signature) {
                     Err(format!("signature check failed:{}", error.to_string()))?
                 }
