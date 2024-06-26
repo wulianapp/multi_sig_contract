@@ -1,9 +1,9 @@
 use ed25519_dalek::Verifier;
 use near_sdk::PublicKey;
 use near_sdk::{env, log, serde_json, AccountId, Promise};
-use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::str::FromStr;
+use near_sdk::store::{LookupMap};
+use near_sdk::collections::{TreeMap};
 
 #[macro_use]
 extern crate near_sdk;
@@ -13,14 +13,6 @@ extern crate near_sdk;
 pub struct Conf {
     rank_max_num: u8,
     slave_max_num: u8,
-}
-impl Default for Conf {
-    fn default() -> Self {
-        Self {
-            rank_max_num: 10,
-            slave_max_num: 12,
-        }
-    }
 }
 
 #[derive(Clone)]
@@ -39,13 +31,13 @@ pub struct PubkeySignInfo {
 
 type Strategy = (Vec<u128>, Vec<u8>, Vec<PublicKey>, u128);
 
-#[derive(Default)]
+#[derive(PanicOnDefault)]
 #[near(contract_state)]
 pub struct Contract {
-    amount_points: HashMap<AccountId, Vec<u128>>,
-    slave_needs: HashMap<AccountId, Vec<u8>>,
-    slaves: HashMap<AccountId, Vec<PublicKey>>,
-    sub_confs: BTreeMap<AccountId, u128>,
+    amount_points: LookupMap<AccountId, Vec<u128>>,
+    slave_needs: LookupMap<AccountId, Vec<u8>>,
+    slaves: LookupMap<AccountId, Vec<PublicKey>>,
+    sub_confs: TreeMap<AccountId, u128>,
     config: Conf,
 }
 
@@ -56,8 +48,10 @@ fn get_slave_needs(
     symbol: &str,
     amount: u128,
 ) -> Result<u8, String> {
-    assert_eq!(amount_points.len(), slave_needs.len());
-
+    require!(
+        amount_points.len() == slave_needs.len(),
+        "amount_points size not equal salves"
+    );
     if amount_points.is_empty() {
         return Ok(0);
     }
@@ -80,9 +74,29 @@ fn get_slave_needs(
     Ok(need_num)
 }
 
+fn is_sorted<T: PartialOrd>(arr: &[T]) -> bool {
+    if arr.len() <= 1 {
+        return true;
+    }
+    arr.windows(2).all(|w| w[0] <= w[1])
+}
+
 #[near]
 impl Contract {
-    pub fn set_config(&mut self, rank_max_num: u8, slave_max_num: u8) {
+
+    #[init]
+    pub fn new(rank_max_num: u8, slave_max_num: u8) -> Self{
+        assert!(env::state_read::<Self>().is_none(), "Already initialized");
+        Self {
+            amount_points: LookupMap::new(b"amount_points".to_vec()),
+            slave_needs: LookupMap::new(b"slave_needs".to_vec()),
+            slaves: LookupMap::new(b"slaves".to_vec()),
+            sub_confs: TreeMap::new(b"sub_confs".to_vec()),
+            config: Conf{rank_max_num,slave_max_num}
+        }
+    }
+
+    pub fn set(&mut self, rank_max_num: u8, slave_max_num: u8) {
         let user_account_id = env::predecessor_account_id();
         let contract_account = env::current_account_id();
         require!(
@@ -119,7 +133,11 @@ impl Contract {
     pub fn set_rank(&mut self, amount_points: Vec<u128>, slave_needs: Vec<u8>) {
         let user_account_id = env::predecessor_account_id();
 
-        //todo: 检查amount_points从小到大，且和salve_needs保持数量一致,salve_needs可以自由
+        //检查amount_points从小到大，且和salve_needs保持数量一致,salve_needs可以自由
+        require!(
+            is_sorted(&amount_points),
+            "amount_points must be orderd"
+        );
         require!(
             amount_points.len() == slave_needs.len(),
             "amount_points size not equal salves"
@@ -135,31 +153,33 @@ impl Contract {
 
     pub fn set_slaves(&mut self, slaves: Vec<PublicKey>) {
         let user_account_id = env::predecessor_account_id();
-        let _salve_needs = self.slave_needs.get(&user_account_id).unwrap().to_owned();
-        let _amount_points = self.amount_points.get(&user_account_id).unwrap().to_owned();
+        let slave_needs = self.slave_needs.get(&user_account_id).unwrap().to_owned();
+        let max_salve_needs = slave_needs.iter().max().map(|x| x.to_owned()).unwrap_or_default();
 
-        //todo: 减少设备后和当前策略有冲突的话直接报错
+        //减少设备后和当前策略有冲突的话直接报错
+        require!(slaves.len() <  max_salve_needs as usize,"new salve size cann't less than max needs");
+
         self.slaves.insert(user_account_id.clone(), slaves);
         log!("set {}'s slaves successfully", user_account_id.to_string());
     }
 
     pub fn set_subaccount_hold_limit(&mut self, hold_limit: u128) {
         let subaccount = env::predecessor_account_id();
-        if let Some(value) = self.sub_confs.get_mut(&subaccount) {
-            *value = hold_limit;
-            log!(
-                "set {}'s hold limit to {} successfully",
+        let log_info = if self.sub_confs.get(&subaccount).is_some() {
+            format!(
+                "update {}'s hold limit to {} successfully",
                 subaccount.to_string(),
                 hold_limit
-            );
+            )
         } else {
-            log!(
+            format!(
                 "insert {}'s hold limit to {} successfully",
                 subaccount,
                 hold_limit
-            );
-            self.sub_confs.insert(subaccount, hold_limit);
-        }
+            )
+        };
+        log!("{}", log_info);
+        self.sub_confs.insert(&subaccount, &hold_limit);
     }
 
     pub fn get_strategy(&self, user_account_id: AccountId) -> Option<Strategy> {
