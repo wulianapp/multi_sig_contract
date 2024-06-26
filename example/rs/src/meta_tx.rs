@@ -1,26 +1,28 @@
 use std::str::FromStr;
 //use ed25519_dalek::Signer;
+use chainless_jsonrpc_client::methods;
+use chainless_jsonrpc_client::JsonRpcClient;
 use ed25519_dalek::Signer as DalekSigner;
 use hex::ToHex;
+use lazy_static::lazy_static;
+use near_crypto::InMemorySigner;
 use near_crypto::{SecretKey, Signature, Signer};
-use chainless_jsonrpc_client::methods;
 use near_jsonrpc_primitives::types::query::QueryResponseKind;
+use near_jsonrpc_primitives::types::transactions::TransactionInfo;
 use near_primitives::action::delegate::{DelegateAction, SignedDelegateAction};
+use near_primitives::borsh::BorshSerialize;
 use near_primitives::signable_message::{SignableMessage, SignableMessageType};
 use near_primitives::transaction::{Action, FunctionCallAction, SignedTransaction, Transaction};
-use near_primitives::types::{BlockReference, Finality, FunctionArgs};
-use near_primitives::views::{ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus, QueryRequest};
-use serde_json::json;
-use chainless_jsonrpc_client::{JsonRpcClient};
-use near_jsonrpc_primitives::types::transactions::TransactionInfo;
-use near_crypto::InMemorySigner;
 use near_primitives::types::AccountId;
-use lazy_static::lazy_static;
-use near_primitives::borsh::BorshSerialize;
-use std::collections::BTreeMap;
+use near_primitives::types::{BlockReference, Finality, FunctionArgs};
+use near_primitives::views::{
+    ExecutionOutcomeWithIdView, FinalExecutionOutcomeView, FinalExecutionStatus, QueryRequest,
+};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::BTreeMap;
 
-const RELAYER_URL: &str =  "http://120.232.251.101:29163/send_meta_tx";
+const RELAYER_URL: &str = "http://120.232.251.101:29163/send_meta_tx";
 
 //todo: 本地meta签
 
@@ -36,8 +38,11 @@ pub struct ExecuteMetTxOutcome {
     pub receipts_outcome: Vec<ExecutionOutcomeWithIdView>,
 }
 
-
-pub async fn gen_meta_transaction(signer: &InMemorySigner, actions:Vec<Action>,receiver_id: &AccountId) -> Result<SignedDelegateAction,String> {
+pub async fn gen_meta_transaction(
+    signer: &InMemorySigner,
+    actions: Vec<Action>,
+    receiver_id: &AccountId,
+) -> Result<SignedDelegateAction, String> {
     let key_state = crate::CHAIN_CLIENT
         .call(methods::query::RpcQueryRequest {
             block_reference: BlockReference::latest(),
@@ -59,7 +64,7 @@ pub async fn gen_meta_transaction(signer: &InMemorySigner, actions:Vec<Action>,r
         .map(near_primitives::action::delegate::NonDelegateAction::try_from)
         .collect::<Result<_, _>>()
         .map_err(|_e| "Internal error: can not convert the action to non delegate action (delegate action can not be delegated again)".to_string())?;
-    
+
     let delegate_action = DelegateAction {
         sender_id: signer.account_id.clone(),
         receiver_id: receiver_id.to_owned(),
@@ -80,17 +85,20 @@ pub async fn gen_meta_transaction(signer: &InMemorySigner, actions:Vec<Action>,r
     Ok(meta_tx)
 }
 
-pub async fn send_meta_tx(delete_action: SignedDelegateAction) -> Result<String,String>{
-    let meta_tx_json  = serde_json::to_string(&delete_action).unwrap();
+pub async fn send_meta_tx(delete_action: SignedDelegateAction) -> Result<String, String> {
+    let meta_tx_json = serde_json::to_string(&delete_action).unwrap();
     let res_text = reqwest::Client::new()
         .post(RELAYER_URL)
         .header("Content-Type", "application/json")
         .body(meta_tx_json)
         .send()
-        .await.unwrap()
-        .text().await.unwrap();
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
     //println!("res_text {}",res_text);
-    let exe_outcome  =  serde_json::from_str::<ExecuteMetTxOutcome>(&res_text).unwrap();
+    let exe_outcome = serde_json::from_str::<ExecuteMetTxOutcome>(&res_text).unwrap();
     if let FinalExecutionStatus::Failure(error) = exe_outcome.status {
         Err(error.to_string())?;
     }
@@ -98,10 +106,12 @@ pub async fn send_meta_tx(delete_action: SignedDelegateAction) -> Result<String,
     Ok(tx_id)
 }
 
-
-pub async fn meta_call(signer: &InMemorySigner, actions:Vec<Action>,receiver_id: &AccountId) -> Result<String,String> {
-    let meta_tx = gen_meta_transaction(&signer, actions,receiver_id).await?;
+pub async fn meta_call(
+    signer: &InMemorySigner,
+    actions: Vec<Action>,
+    receiver_id: &AccountId,
+) -> Result<String, String> {
+    let meta_tx = gen_meta_transaction(&signer, actions, receiver_id).await?;
     let tx_id = send_meta_tx(meta_tx).await.unwrap();
     Ok(tx_id)
 }
-
